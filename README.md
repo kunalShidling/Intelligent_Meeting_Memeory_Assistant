@@ -483,5 +483,7 @@ For issues or questions:
 - [ ] Voice activity detection
 - [ ] Noise cancellation
 - [ ] Mobile app integration
-#   m i n i p r o j e c t  
+#   m i n i p r o j e c t 
+ 
+ #   m i n i - P r - 2  
  
