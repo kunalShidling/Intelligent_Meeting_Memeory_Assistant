@@ -204,8 +204,8 @@ class ContinuousMonitor:
     def get_cache_key(self, box: Tuple[int, int, int, int]) -> str:
         """Generate cache key from bounding box"""
         x, y, w, h = box
-        # Round to nearest 20 pixels to group nearby boxes
-        return f"{x//20}_{y//20}_{w//20}_{h//20}"
+        # Round to nearest 30 pixels to handle small jitters especially for faraway faces
+        return f"{x//30}_{y//30}_{w//30}_{h//30}"
     
     def get_cached_result(self, box: Tuple[int, int, int, int]) -> Optional[Dict]:
         """Get cached recognition result if available and not expired"""

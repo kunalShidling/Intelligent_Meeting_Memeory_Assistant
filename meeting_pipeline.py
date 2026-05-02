@@ -220,8 +220,16 @@ class MeetingPipeline:
             person_record = self.database.get_person_by_name(best_match_name)
             person_id = str(person_record['_id'])
             
-            # Update image path
-            self.database.update_person_image(person_id, captured_image_path)
+            # Update embedding and image if confidence is high enough
+            if opencv_config.UPDATE_THRESHOLD <= similarity < opencv_config.DUPLICATE_THRESHOLD:
+                logger.info(f"High confidence ({similarity:.4f}). Updating embedding and image for {best_match_name}.")
+                self.database.update_person_embedding_and_image(person_id, embedding, captured_image_path)
+                
+                # Clear recognizer cache to ensure subsequent match updates use the new embedding
+                self.recognizer._cached_records = None
+            else:
+                # Otherwise, just update the image to the most recent one
+                self.database.update_person_image(person_id, captured_image_path)
             
             return person_id, best_match_name, captured_image_path, False
         else:

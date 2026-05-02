@@ -57,3 +57,5 @@ models/
 # Database
 *.db
 *.sqlite
+.config.py
+node_modules/

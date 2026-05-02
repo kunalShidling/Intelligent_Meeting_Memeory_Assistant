@@ -13,12 +13,12 @@ QUIT_KEY = 'q'  # Key to quit
 
 # ==================== Face Detection Settings ====================
 # MTCNN settings
-MTCNN_MIN_FACE_SIZE = 40
+MTCNN_MIN_FACE_SIZE = 20  # Reduced to detect smaller faces (further away)
 MTCNN_THRESHOLDS = [0.6, 0.7, 0.7]  # Confidence thresholds for P-Net, R-Net, O-Net
 MTCNN_DEVICE = 'cpu'  # Use 'cuda' if GPU available
 
 # Face detection confidence threshold
-MIN_DETECTION_CONFIDENCE = 0.90
+MIN_DETECTION_CONFIDENCE = 0.75  # Lowered to accept faces from further away
 
 # ==================== Face Embedding Settings ====================
 # FaceNet settings
@@ -32,8 +32,10 @@ PIXEL_STD = 128.0
 
 # ==================== Recognition Settings ====================
 # Cosine similarity thresholds
-RECOGNITION_THRESHOLD = 0.85  # If similarity >= this, person is recognized
+RECOGNITION_THRESHOLD = 0.75  # If similarity >= this, person is recognized
 DUPLICATE_THRESHOLD = 0.98  # If similarity >= this, considered duplicate
+UPDATE_THRESHOLD = 0.75  # Update profile if similarity is >= this (but < DUPLICATE_THRESHOLD)
+UPDATE_COOLDOWN_HOURS = 24  # Wait 24 hours before updating same person again
 
 # ==================== Database Settings ====================
 # MongoDB connection - Choose one:

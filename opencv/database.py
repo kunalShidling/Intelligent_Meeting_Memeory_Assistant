@@ -267,6 +267,7 @@ class FaceDatabase:
             records = []
             for doc in cursor:
                 records.append({
+                    '_id': doc['_id'],  # Include _id field
                     'name': doc['name'],
                     'embedding': self._list_to_embedding(doc['embedding']),
                     'date': doc.get('date')
@@ -515,20 +516,83 @@ class FaceDatabase:
             bool: True if successful, False otherwise
         """
         try:
+            import os
+            from bson.objectid import ObjectId
             if not self.is_connected():
                 logger.error("Database not connected")
                 return False
             
-            from bson.objectid import ObjectId
+            # Find the existing record to get the old image path
+            existing_doc = self.collection.find_one({'_id': ObjectId(person_id)})
+            old_image_path = existing_doc.get('image_path') if existing_doc else None
+
             result = self.collection.update_one(
                 {'_id': ObjectId(person_id)},
                 {'$set': {'image_path': image_path, 'updated_at': datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow()}}
             )
             
+            # Delete the old image to avoid storage bloat
+            if old_image_path and old_image_path != image_path:
+                if os.path.exists(old_image_path):
+                    try:
+                        os.remove(old_image_path)
+                        logger.info(f"Deleted old image for record {person_id}: {old_image_path}")
+                    except OSError as e:
+                        logger.error(f"Could not delete old image {old_image_path}: {e}")
+            
             return result.modified_count > 0
             
         except Exception as e:
             logger.error(f"Error updating person image: {e}")
+            return False
+
+    def update_person_embedding_and_image(
+        self,
+        person_id: str,
+        embedding: np.ndarray,
+        image_path: str
+    ) -> bool:
+        """
+        Update the embedding and image path for a person to adapt to slight
+        changes in their appearance over time.
+        """
+        try:
+            import os
+            from bson.objectid import ObjectId
+            if not self.is_connected():
+                logger.error("Database not connected")
+                return False
+
+            # Validate new embedding
+            if not self.validate_embedding(embedding):
+                return False
+
+            # Find the existing record to get the old image path
+            existing_doc = self.collection.find_one({'_id': ObjectId(person_id)})
+            old_image_path = existing_doc.get('image_path') if existing_doc else None
+
+            result = self.collection.update_one(
+                {'_id': ObjectId(person_id)},
+                {'$set': {
+                    'embedding': self._embedding_to_list(embedding),
+                    'image_path': image_path,
+                    'updated_at': datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow()
+                }}
+            )
+
+            # Delete the old image to save space
+            if old_image_path and old_image_path != image_path:
+                if os.path.exists(old_image_path):
+                    try:
+                        os.remove(old_image_path)
+                        logger.info(f"Deleted old image for record {person_id}: {old_image_path}")
+                    except OSError as e:
+                        logger.error(f"Could not delete old image {old_image_path}: {e}")
+
+            return result.modified_count > 0
+
+        except Exception as e:
+            logger.error(f"Error updating person embedding and image: {e}")
             return False
 
 

@@ -24,7 +24,22 @@ class FaceRecognizer:
             database: Connected FaceDatabase instance
         """
         self.database = database
+        self._cached_records = None
+        self._cache_timestamp = 0
+        self._cache_ttl = 60  # Cache embeddings for 60 seconds
         logger.info("Face recognizer initialized")
+    
+    def _get_all_records(self):
+        """Get all records, caching them to avoid reading DB every frame."""
+        import time
+        current_time = time.time()
+        
+        if self._cached_records is None or (current_time - self._cache_timestamp) > self._cache_ttl:
+            logger.info("Fetching updated embeddings from database to refresh cache...")
+            self._cached_records = self.database.get_all_embeddings()
+            self._cache_timestamp = current_time
+            
+        return self._cached_records
     
     def compute_cosine_similarity(self, emb1: np.ndarray, emb2: np.ndarray) -> float:
         """
@@ -77,8 +92,8 @@ class FaceRecognizer:
                 - all_matches: List of all matches with scores
         """
         try:
-            # Get all stored embeddings
-            all_records = self.database.get_all_embeddings()
+            # Get all stored embeddings from cache instead of fetching every frame
+            all_records = self._get_all_records()
             
             if not all_records:
                 logger.info("No embeddings in database to match against")
@@ -197,6 +212,8 @@ class FaceRecognizer:
             
             if success:
                 logger.info(f"✓ Successfully registered: '{name}'")
+                # Invalidate cache so it fetches the new person on next recognize
+                self._cached_records = None
             else:
                 logger.error(f"✗ Failed to register: '{name}'")
             

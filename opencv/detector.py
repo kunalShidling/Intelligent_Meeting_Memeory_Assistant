@@ -20,7 +20,7 @@ class FaceDetector:
     def __init__(self):
         """Initialize MTCNN face detector."""
         try:
-            # MTCNN 1.0.0+ has simplified API - no constructor parameters needed
+            # MTCNN 1.0.0+ has simplified API - we use default init and it will use its default min_face_size
             self.detector = MTCNN()
             logger.info("MTCNN face detector initialized successfully")
         except Exception as e:

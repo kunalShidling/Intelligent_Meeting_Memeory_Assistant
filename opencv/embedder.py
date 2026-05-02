@@ -176,11 +176,8 @@ class FaceEmbedder:
         try:
             logger.info(f"Generating embedding for face - Shape: {face_image.shape}")
             
-            # Preprocess
-            face_tensor = self.preprocess_face(face_image)
-            
             # Generate embedding
-            embedding = self.generate_embedding(face_tensor)
+            embedding = self.generate_embedding(face_image)
             
             # Validate embedding size
             if len(embedding) != config.EMBEDDING_SIZE:
