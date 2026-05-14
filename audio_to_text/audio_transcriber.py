@@ -37,7 +37,7 @@ class AudioTranscriber:
         model: The loaded Whisper model
     """
     
-    SUPPORTED_FORMATS = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.wma', '.aac', '.mp4'}
+    SUPPORTED_FORMATS = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.wma', '.aac', '.mp4', '.webm'}
     AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large']
     
     def __init__(self, model_name: str = 'base', device: str = 'cpu'):

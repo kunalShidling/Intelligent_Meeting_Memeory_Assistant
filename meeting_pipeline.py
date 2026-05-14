@@ -114,196 +114,61 @@ class MeetingPipeline:
             logger.error(f"Failed to initialize components: {e}")
             raise
     
-    def capture_and_recognize_face(self) -> Tuple[Optional[str], Optional[str], Optional[str], bool]:
-        """
-        Capture face from camera and recognize person.
-        
-        Returns:
-            Tuple: (person_id, person_name, image_path, is_new_person)
-        """
-        logger.info("\n" + "=" * 80)
-        logger.info("STEP 1: FACE RECOGNITION")
+    def capture_and_recognize_participants(self) -> list:
+        logger.info("
+" + "=" * 80)
+        logger.info("FACE RECOGNITION (PARTICIPANTS)")
         logger.info("=" * 80)
         
-        print("\n📷 Starting camera for face detection...")
-        print("Position yourself in front of the camera")
-        print("Press 'c' to capture your face")
-        print("Press 'q' to quit\n")
-        
-        # Open camera
-        if not self.camera.open():
-            logger.error("Failed to open camera")
-            print("❌ Failed to open camera. Please check your camera connection.")
-            return None, None, None, False
-        
+        if not self.camera.open(): return []
         captured_image_path = None
-        
         while True:
-            # Read frame from camera
             success, frame = self.camera.read_frame()
-            if not success or frame is None:
-                logger.error("Failed to read frame from camera")
-                return None, None, None, False
-            
-            # Detect faces in frame
+            if not success: break
             detections = self.detector.detect_faces(frame)
-            
-            # Draw rectangles around detected faces
             display_frame = frame.copy()
-            for detection in detections:
-                box = detection['box']
-                x, y, w, h = box
-                confidence = detection['confidence']
-                cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                cv2.putText(display_frame, f"Face {confidence:.2f}", (x, y - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            
-            # Display instructions
-            cv2.putText(display_frame, "Press 'c' to capture | 'q' to quit",
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            cv2.imshow("Face Recognition - Capture", display_frame)
-            
+            for i, d in enumerate(detections):
+                x, y, w, h = d['box']
+                cv2.rectangle(display_frame, (x, y), (x+w, y+h), (0,255,0), 2)
+            cv2.imshow("Face Capture", display_frame)
             key = cv2.waitKey(1) & 0xFF
-            
             if key == ord('c'):
-                # Capture current frame
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                captured_image_path = str(self.images_dir / f"capture_{timestamp}.jpg")
+                captured_image_path = str(self.images_dir / f"capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg")
                 cv2.imwrite(captured_image_path, frame)
-                logger.info(f"Frame captured: {captured_image_path}")
                 break
-            elif key == ord('q'):
-                logger.info("Face capture cancelled by user")
-                cv2.destroyAllWindows()
-                return None, None, None, False
-        
+            elif key == ord('q'): break
         cv2.destroyAllWindows()
         
-        # Process captured face
-        if captured_image_path is None:
-            return None, None, None, False
+        if not captured_image_path: return []
         
-        # Detect and extract face
-        logger.info("Detecting face in captured image...")
-        success, face_img, detection_info = self.detector.detect_and_extract_largest_face(captured_image_path)
-        
-        if not success:
-            logger.error("No face detected in captured image")
-            print("❌ No face detected. Please try again.")
-            return None, None, None, False
-        
-        print(f"✓ Face detected with confidence: {detection_info['confidence']:.2f}")
-        
-        # Generate embedding
-        logger.info("Generating face embedding...")
-        embedding = self.embedder.generate_embedding(face_img)
-        
-        if embedding is None:
-            logger.error("Failed to generate embedding")
-            print("❌ Failed to generate face embedding. Please try again.")
-            return None, None, None, False
-        
-        print("✓ Face embedding generated")
-        
-        # Try to recognize person
-        logger.info("Searching for matching face in database...")
-        best_match_name, similarity, all_matches = self.recognizer.find_best_match(embedding)
-        
-        if best_match_name and similarity >= opencv_config.RECOGNITION_THRESHOLD:
-            # Person recognized
-            logger.info(f"Person recognized: {best_match_name} (similarity: {similarity:.4f})")
-            print(f"\n✓ Person Recognized: {best_match_name}")
-            print(f"  Similarity: {similarity:.2%}")
+        faces_data = self.detector.detect_and_extract_all_faces(captured_image_path)
+        participants = []
+        for i, (face_img, detection_info) in enumerate(faces_data):
+            embedding = self.embedder.generate_embedding(face_img)
+            if embedding is None: continue
+            best_match_name, similarity, _ = self.recognizer.find_best_match(embedding)
             
-            # Get person record
-            person_record = self.database.get_person_by_name(best_match_name)
-            person_id = str(person_record['_id'])
-            
-            # Update embedding and image if confidence is high enough
-            if opencv_config.UPDATE_THRESHOLD <= similarity < opencv_config.DUPLICATE_THRESHOLD:
-                logger.info(f"High confidence ({similarity:.4f}). Updating embedding and image for {best_match_name}.")
-                self.database.update_person_embedding_and_image(person_id, embedding, captured_image_path)
-                
-                # Clear recognizer cache to ensure subsequent match updates use the new embedding
-                self.recognizer._cached_records = None
+            if best_match_name and similarity >= opencv_config.RECOGNITION_THRESHOLD:
+                p_rec = self.database.get_person_by_name(best_match_name)
+                participants.append({"id": str(p_rec['_id']), "name": best_match_name, "image": captured_image_path, "is_new": False})
             else:
-                # Otherwise, just update the image to the most recent one
-                self.database.update_person_image(person_id, captured_image_path)
-            
-            return person_id, best_match_name, captured_image_path, False
-        else:
-            # New person
-            logger.info("No match found - new person")
-            print("\n👤 New person detected!")
-            
-            # Get name
-            name = input("Please enter your name: ").strip()
-            if not name:
-                logger.error("No name provided")
-                return None, None, None, False
-            
-            # Store in database
-            logger.info(f"Registering new person: {name}")
-            if self.database.store_embedding(name, embedding, check_duplicates=False):
-                person_record = self.database.get_person_by_name(name)
-                person_id = str(person_record['_id'])
-                
-                # Update with image path
-                self.database.update_person_image(person_id, captured_image_path)
-                
-                print(f"✓ Registered: {name}")
-                return person_id, name, captured_image_path, True
-            else:
-                logger.error("Failed to register new person")
-                return None, None, None, False
-    
-    def display_person_info(self, person_id: str, person_name: str, image_path: str, is_new: bool):
-        """
-        Display person information and last meeting summary.
-        
-        Args:
-            person_id: Person's database ID
-            person_name: Person's name
-            image_path: Path to person's image
-            is_new: Whether this is a new person
-        """
-        logger.info("\n" + "=" * 80)
-        logger.info("STEP 2: PERSON INFORMATION")
-        logger.info("=" * 80)
-        
-        print(f"\n{'=' * 80}")
-        print(f"PERSON INFORMATION")
-        print(f"{'=' * 80}")
-        print(f"Name: {person_name}")
-        print(f"ID: {person_id}")
-        print(f"Status: {'New Registration' if is_new else 'Returning'}")
-        print(f"{'=' * 80}")
-        
-        if not is_new:
-            # Get last meeting
-            last_meeting = self.database.get_last_meeting(person_id)
-            
-            if last_meeting:
-                print(f"\n📝 LAST MEETING SUMMARY")
-                print(f"{'=' * 80}")
-                print(f"Date: {last_meeting['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
-                print(f"\nSummary:")
-                print(last_meeting['summary'])
-                print(f"{'=' * 80}")
-            else:
-                print("\n(No previous meetings recorded)")
-        
-        # Display image
-        if os.path.exists(image_path):
-            img = cv2.imread(image_path)
-            if img is not None:
-                cv2.imshow(f"Recognized: {person_name}", img)
-                print("\n[Image displayed in window - Press any key to continue]")
-                cv2.waitKey(0)
+                cv2.imshow("New", face_img)
+                cv2.waitKey(100)
+                name = input("Enter name: ").strip()
                 cv2.destroyAllWindows()
-    
-    def record_and_process_meeting(self, person_id: str, person_name: str, image_path: str) -> bool:
+                if name and self.database.store_embedding(name, embedding, False):
+                    p_rec = self.database.get_person_by_name(name)
+                    participants.append({"id": str(p_rec['_id']), "name": name, "image": captured_image_path, "is_new": True})
+        return participants
+    def display_participants_info(self, participants: list):
+        for p in participants:
+            print(f"
+--- {p['name']} ---")
+            if not p['is_new']:
+                lm = self.database.get_last_meeting(p['id'])
+                if lm: print(f"Last Meeting:
+{lm['summary']}")
+    def record_and_process_meeting(self, participants: list, image_path: str) -> bool:
         """
         Record conversation, transcribe, summarize, and store.
         
@@ -336,7 +201,8 @@ class MeetingPipeline:
         
         # Prepare audio file path
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        audio_filename = f"meeting_{person_name.replace(' ', '_')}_{timestamp}.wav"
+        group_names = '_'.join([p['name'].replace(' ', '_') for p in participants[:3]])
+        audio_filename = f\"meeting_{group_names}_{timestamp}.wav\"
         audio_path = str(self.audio_dir / audio_filename)
         
         # Record audio
@@ -445,14 +311,18 @@ class MeetingPipeline:
         print(f"{'=' * 80}")
         
         try:
-            meeting_id = self.database.store_meeting(
-                person_id=person_id,
-                person_name=person_name,
-                transcript=transcript,
-                summary=summary,
-                audio_path=audio_path,
-                image_path=image_path
-            )
+            meeting_id = "group_meeting"
+            for p in participants:
+                self.database.store_meeting(
+                    person_id=p['id'],
+                    person_name=p['name'],
+                    image_path=image_path,
+                    audio_path=audio_path,
+                    transcript_path=transcript_path,
+                    transcript=transcript,
+                    summary_path=summary_path,
+                    summary=summary
+                )
             
             if meeting_id:
                 print(f"✓ Meeting stored successfully")
@@ -482,10 +352,10 @@ class MeetingPipeline:
                 return
             
             # Step 2: Display Person Info
-            self.display_person_info(person_id, person_name, image_path, is_new)
+            self.display_participants_info(participants)
             
             # Step 3-6: Record and Process Meeting
-            success = self.record_and_process_meeting(person_id, person_name, image_path)
+            success = self.record_and_process_meeting(participants, image_path)
             
             if success:
                 print("\n" + "=" * 80)

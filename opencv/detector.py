@@ -17,10 +17,15 @@ logger = logging.getLogger(__name__)
 class FaceDetector:
     """Face detector using MTCNN."""
     
+    # Minimum image dimension accepted by MTCNN without producing empty Conv2D batches
+    MIN_IMAGE_DIM = 80
+
     def __init__(self):
         """Initialize MTCNN face detector."""
+        import threading
+        self.inference_lock = threading.Lock()
         try:
-            # MTCNN 1.0.0+ has simplified API - we use default init and it will use its default min_face_size
+            # MTCNN 1.0.0+ has simplified API
             self.detector = MTCNN()
             logger.info("MTCNN face detector initialized successfully")
         except Exception as e:
@@ -37,14 +42,46 @@ class FaceDetector:
         Returns:
             list: List of detected faces with bounding boxes and confidence
         """
+        import gc
         try:
+            h, w = image.shape[:2]
+
+            # Guard: MTCNN's image pyramid creates zero-size batches on very small
+            # images, causing a TF Conv2D crash. Reject them early.
+            if h < self.MIN_IMAGE_DIM or w < self.MIN_IMAGE_DIM:
+                logger.debug(
+                    f"Image too small for MTCNN ({w}x{h}), "
+                    f"minimum is {self.MIN_IMAGE_DIM}px on each side"
+                )
+                return []
+
             # Convert BGR to RGB (MTCNN expects RGB)
             rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
-            # Detect faces
-            detections = self.detector.detect_faces(rgb_image)
+            # Detect faces — wrap in its own try/except to catch TF/Keras
+            # version-mismatch errors (Conv2D empty batch, PNet positional-arg)
+            # without crashing the whole request.
+            with self.inference_lock:
+                try:
+                    detections = self.detector.detect_faces(rgb_image)
+                except Exception as tf_err:
+                    err_str = str(tf_err)
+                    # Known compat errors between mtcnn and newer TensorFlow/Keras
+                    if any(kw in err_str for kw in [
+                        'Conv2D', 'PNet', 'positional arguments',
+                        'empty output', 'DefaultCPUAllocator'
+                    ]):
+                        logger.debug(
+                            f"MTCNN TF-compat issue (no faces returned): {err_str[:120]}"
+                        )
+                        return []
+                    raise  # re-raise unexpected errors
             
             logger.debug(f"Detected {len(detections)} face(s)")
+            
+            # Explicitly collect garbage after detection to prevent memory leaks in TF loop
+            gc.collect()
+            
             return detections
             
         except Exception as e:
@@ -212,6 +249,66 @@ class FaceDetector:
         except Exception as e:
             logger.error(f"Error in detect_and_extract_largest_face: {e}")
             return False, None, None
+            
+    def detect_and_extract_all_faces(
+        self,
+        image_path: str,
+        padding: int = 20
+    ) -> list:
+        """
+        Detect and extract all faces from an image file.
+        
+        Args:
+            image_path: Path to image file
+            padding: Padding around face in pixels
+            
+        Returns:
+            list: List of tuples (face_img, detection_info) for valid faces
+        """
+        try:
+            # Read image
+            image = cv2.imread(image_path)
+            if image is None:
+                logger.error(f"Failed to read image: {image_path}")
+                return []
+            
+            logger.info(f"Processing image: {image_path}, Shape: {image.shape}")
+            
+            # Detect faces
+            detections = self.detect_faces(image)
+            
+            if not detections:
+                logger.warning("No faces detected in image")
+                return []
+            
+            valid_faces = []
+            for det in detections:
+                # Validate detection
+                if not self.validate_detection(det):
+                    continue
+                
+                # Crop face
+                face = self.crop_face(image, det, padding)
+                if face is None:
+                    continue
+                
+                # Prepare detection info
+                detection_info = {
+                    'box': det['box'],
+                    'confidence': det['confidence'],
+                    'keypoints': det.get('keypoints', {}),
+                    'image_shape': image.shape,
+                    'face_shape': face.shape
+                }
+                
+                valid_faces.append((face, detection_info))
+                
+            logger.info(f"Extracted {len(valid_faces)} valid faces successfully.")
+            return valid_faces
+            
+        except Exception as e:
+            logger.error(f"Error in detect_and_extract_all_faces: {e}")
+            return []
     
     def visualize_detection(
         self,

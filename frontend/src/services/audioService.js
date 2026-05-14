@@ -26,9 +26,6 @@ export const audioService = {
     const formData = new FormData();
     formData.append('audio', audioBlob, 'recording.webm');
     return await api.post('/audio/process-file', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
     });
   },
 

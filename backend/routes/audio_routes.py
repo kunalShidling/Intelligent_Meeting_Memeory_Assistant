@@ -8,6 +8,7 @@ import sys
 import os
 import logging
 from datetime import datetime
+from pathlib import Path
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -21,21 +22,36 @@ logger = logging.getLogger(__name__)
 # Create blueprint
 audio_bp = Blueprint('audio', __name__, url_prefix='/api/audio')
 
+MINIMUM_AUDIO_BYTES = 1024
+
 # Global instances
 mic_transcriber = None
 audio_transcriber = None
 text_summarizer = None
 recording_data = {}  # Store recording sessions
 
+import threading
+init_lock = threading.Lock()
+
 def init_components():
     """Initialize audio processing components."""
     global mic_transcriber, audio_transcriber, text_summarizer
 
-    if mic_transcriber is None:
+    if mic_transcriber is not None and audio_transcriber is not None and text_summarizer is not None:
+        return
+
+    with init_lock:
+        if mic_transcriber is not None and audio_transcriber is not None and text_summarizer is not None:
+            return
+            
         logger.info("Initializing audio components...")
-        mic_transcriber = MicrophoneTranscriber(model_name='base', device='cpu')
-        audio_transcriber = AudioTranscriber(model_name='base', device='cpu')
-        text_summarizer = TextSummarizer()
+        mic_t = MicrophoneTranscriber(model_name='tiny', device='cpu')
+        audio_t = AudioTranscriber(model_name='tiny', device='cpu')
+        text_s = TextSummarizer(model='llama-3.1-8b-instant')
+        
+        mic_transcriber = mic_t
+        audio_transcriber = audio_t
+        text_summarizer = text_s
         logger.info("Audio components initialized successfully")
 
 @audio_bp.route('/record', methods=['POST'])
@@ -202,8 +218,19 @@ def process_audio_file():
         os.makedirs(audio_dir, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        audio_path = os.path.join(audio_dir, f'upload_{timestamp}.wav')
+        original_suffix = Path(audio_file.filename or '').suffix.lower()
+        if original_suffix not in AudioTranscriber.SUPPORTED_FORMATS:
+            original_suffix = '.webm'
+
+        audio_path = os.path.join(audio_dir, f'upload_{timestamp}{original_suffix}')
         audio_file.save(audio_path)
+
+        file_size = os.path.getsize(audio_path)
+        if file_size < MINIMUM_AUDIO_BYTES:
+            return jsonify({
+                'error': 'Uploaded audio file is too short or empty. Please record a longer clip and try again.',
+                'file_size': file_size
+            }), 400
 
         # Transcribe
         text = audio_transcriber.transcribe_audio(

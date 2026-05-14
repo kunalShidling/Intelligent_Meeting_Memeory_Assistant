@@ -22,6 +22,9 @@ class FaceEmbedder:
     def __init__(self):
         """Initialize FaceNet model."""
         try:
+            # Set number of threads to 1 to fix PyTorch memory allocation errors on Windows in multithreaded environments
+            torch.set_num_threads(1)
+            
             # Load pretrained FaceNet model (trained on VGGFace2)
             self.device = torch.device(config.FACENET_DEVICE)
             self.model = InceptionResnetV1(pretrained='vggface2').eval().to(self.device)

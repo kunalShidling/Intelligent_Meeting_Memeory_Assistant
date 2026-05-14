@@ -10,6 +10,15 @@ import sys
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress INFO and WARNING logs
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN optimizations messages
 
+# Handle NumPy compatibility
+try:
+    import numpy
+    numpy_version = tuple(int(x) for x in numpy.__version__.split('.')[:2])
+    if numpy_version >= (2, 0):
+        os.environ['NUMPY_EXPERIMENTAL_ARRAY_FUNCTION'] = '0'
+except:
+    pass
+
 # Add parent directory, opencv, and audio_to_text to sys.path so modules can find each other
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)

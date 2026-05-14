@@ -8,43 +8,74 @@ import PeoplePage from './pages/PeoplePage'
 import PersonProfilePage from './pages/PersonProfilePage'
 import SettingsPage from './pages/SettingsPage'
 import LoadingSpinner from './components/Common/LoadingSpinner'
-import api from './services/api'
 
 function App() {
   const [backendReady, setBackendReady] = useState(false)
-  const [backendError, setBackendError] = useState(false)
+  const [statusMessage, setStatusMessage] = useState('Connecting to backend server...')
 
   useEffect(() => {
-    checkBackendHealth()
-  }, [])
+    let cancelled = false
+    let retryTimer = null
 
-  const checkBackendHealth = async () => {
-    try {
-      // Try to connect to backend health endpoint
-      await api.get('/health')
-      setBackendReady(true)
-    } catch (error) {
-      console.warn('Backend not ready yet, will retry...')
-      setBackendError(true)
-      // Even if health check fails, allow the app to load
-      // The retry logic in api.js will handle subsequent requests
-      setTimeout(() => {
-        setBackendReady(true)
-      }, 2000)
+    const checkBackendHealth = async (attempt = 1) => {
+      try {
+        const response = await fetch('/api/health', { cache: 'no-store' })
+
+        // 503 means our Vite proxy error handler fired — backend not up yet
+        if (response.status === 503) {
+          throw new Error('starting')
+        }
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+
+        if (!cancelled) {
+          setBackendReady(true)
+        }
+      } catch (error) {
+        if (cancelled) return
+
+        const isStarting = error.message === 'starting' || error.message.includes('Failed to fetch')
+        const message = isStarting
+          ? `Backend is initializing, please wait... (attempt ${attempt})`
+          : `Backend error: ${error.message}. Retrying...`
+
+        setStatusMessage(message)
+
+        // Exponential backoff capped at 5 s
+        const delay = Math.min(1000 * Math.pow(1.5, attempt - 1), 5000)
+        retryTimer = setTimeout(() => checkBackendHealth(attempt + 1), delay)
+      }
     }
-  }
+
+    checkBackendHealth()
+
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
+  }, [])
 
   if (!backendReady) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <LoadingSpinner size="xl" text="Connecting to backend server..." />
-          {backendError && (
-            <p className="mt-4 text-sm text-gray-600">
-              Backend is initializing. This may take a moment...
-            </p>
-          )}
-        </div>
+      <div style={{
+        minHeight: '100vh',
+        background: '#f9fafb',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'column',
+        gap: '16px',
+        fontFamily: 'Inter, system-ui, sans-serif'
+      }}>
+        <LoadingSpinner size="xl" text="Starting Meeting Assistant..." />
+        <p style={{ color: '#6b7280', fontSize: '0.875rem', textAlign: 'center', maxWidth: '320px' }}>
+          {statusMessage}
+        </p>
+        <p style={{ color: '#9ca3af', fontSize: '0.75rem' }}>
+          Make sure the backend server is running on port 5000.
+        </p>
       </div>
     )
   }

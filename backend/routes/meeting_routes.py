@@ -136,6 +136,32 @@ def create_meeting():
             )
 
         # Store meeting
+        
+        # If image_path is a base64 string, save it correctly 
+        if image_path and image_path.startswith('data:image'):
+            # Save properly in meeting_data/images
+            try:
+                import base64
+                from datetime import datetime
+                import os
+                
+                parts = image_path.split(',')
+                data_b64 = parts[1] if len(parts) > 1 else parts[0]
+                
+                images_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'meeting_data', 'images')
+                os.makedirs(images_dir, exist_ok=True)
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                new_image_path = os.path.join(images_dir, f'meeting_{person_name}_{timestamp}.jpg')
+                
+                with open(new_image_path, 'wb') as f:
+                    f.write(base64.b64decode(data_b64))
+                
+                image_path = new_image_path
+            except Exception as e:
+                logger.error(f"Failed to save base64 image: {e}")
+                image_path = "" # Nullify or let it be
+
         meeting_id = database.store_meeting(
             person_id=person_id,
             person_name=person_name,

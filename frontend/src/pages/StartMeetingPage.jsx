@@ -1,6 +1,6 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Camera, Mic, User, CheckCircle, AlertCircle, Loader2, Square } from 'lucide-react';
+import { Camera, Mic, User, CheckCircle, AlertCircle, Loader2, MicOff } from 'lucide-react';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import faceService from '../services/faceService';
 import meetingService from '../services/meetingService';
@@ -8,458 +8,599 @@ import audioService from '../services/audioService';
 
 export default function StartMeetingPage() {
   const navigate = useNavigate();
-  const [stage, setStage] = useState('capture'); // capture, register, recording, processing, complete
-  const [loading, setLoading] = useState(false);
+  // Status: 'waiting', 'recording', 'processing', 'review'
+  const [pipelineStatus, setPipelineStatus] = useState('waiting');
   const [error, setError] = useState(null);
-
-  // Recognition data
-  const [capturedImage, setCapturedImage] = useState(null);
+  const [reviewData, setReviewData] = useState({ transcript: '', summary: '', audio_path: '' });
+  const [showRegisterModal, setShowRegisterModal] = useState(false);
+  
   const [recognitionResult, setRecognitionResult] = useState(null);
+  const [capturedImage, setCapturedImage] = useState(null);
+  const [voiceActive, setVoiceActive] = useState(false);
   const [newPersonName, setNewPersonName] = useState('');
 
-  // Recording data
-  const [isRecording, setIsRecording] = useState(false);
-  const [mediaRecorder, setMediaRecorder] = useState(null);
+  // Refs for tracking background loops without triggering unneeded re-renders
+  const loopRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const silenceTimeoutRef = useRef(null);
+  const audioStreamRef = useRef(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const isRecognizingRef = useRef(false);
+  const lastRecognitionAtRef = useRef(0);
 
-  const [meetingResult, setMeetingResult] = useState(null);
+  const isPersonPresentRef = useRef(false);
+  const activeMeetingPersonRef = useRef(null);
+  const MIN_AUDIO_BYTES = 5120;
+  const PERSON_GRACE_MS = 6000;
 
-  // Step 1: Capture and recognize face
-  const handleCaptureFace = async () => {
+  // --- Refs that mirror state so callbacks always see the latest value ---
+  // Without these, setInterval / requestAnimationFrame closures capture stale state.
+  const pipelineStatusRef = useRef('waiting');
+  const recognitionResultRef = useRef(null);
+
+  // Keep mirrors in sync
+  useEffect(() => { pipelineStatusRef.current = pipelineStatus; }, [pipelineStatus]);
+  useEffect(() => { recognitionResultRef.current = recognitionResult; }, [recognitionResult]);
+
+  // Mount-only effect – NEVER re-runs when pipelineStatus changes.
+  // Previously this had [pipelineStatus] as dep, which caused React to run the
+  // cleanup (stopping MediaRecorder) every time a session started → instant
+  // 'session too short' loop.
+  useEffect(() => {
+    setupAudioPipeline();
+    loopRef.current = setInterval(pollFaceRecognition, 500);
+
+    return () => {
+      // True unmount cleanup only
+      if (loopRef.current) clearInterval(loopRef.current);
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach(t => t.stop());
+      }
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+    };
+  }, []); // <-- mount/unmount ONLY
+
+  // Backend Face Recognition Loop (500ms)
+  // Uses refs (pipelineStatusRef, recognitionResultRef) so the setInterval callback
+  // always reads the current value, not a stale closure.
+  const pollFaceRecognition = async () => {
+    const status = pipelineStatusRef.current;
+    const lastResult = recognitionResultRef.current;
+    if (status === 'processing' || lastResult?.requires_registration) return;
+    if (!videoRef.current || !canvasRef.current) return;
+    if (isRecognizingRef.current) return;
+
+    const video = videoRef.current;
+    if (video.videoWidth === 0 || video.videoHeight === 0) return;
+
+    isRecognizingRef.current = true;
+
     try {
-      setLoading(true);
-      setError(null);
+      const canvas = canvasRef.current;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d');
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const frameBase64 = canvas.toDataURL('image/jpeg', 0.8);
 
-      // Capture face from camera
-      const captureResponse = await faceService.captureface();
-      setCapturedImage(captureResponse.image);
+      setCapturedImage(frameBase64);
 
-      // Recognize person
-      const recognizeResponse = await faceService.recognizeFace(captureResponse.path);
-
-      if (recognizeResponse.success) {
+      // Recognize
+      const recognizeResponse = await faceService.recognizeFaceBase64(frameBase64);
+      
+      if (recognizeResponse && recognizeResponse.success) {
+        lastRecognitionAtRef.current = Date.now();
         setRecognitionResult(recognizeResponse);
-
-        if (recognizeResponse.is_new || recognizeResponse.requires_registration) {
-          // New person - need registration
-          setStage('register');
-        } else {
-          // Recognized - go to recording
-          setStage('recording');
+        isPersonPresentRef.current = true;
+        
+        // If we are waiting and recognize a new person, open the modal
+        if (pipelineStatusRef.current === 'waiting' && recognizeResponse?.requires_registration && !showRegisterModal) {
+            setShowRegisterModal(true);
+        }
+      } else if (recognizeResponse?.requires_registration) {
+        setRecognitionResult(recognizeResponse);
+        isPersonPresentRef.current = true;
+        if (pipelineStatusRef.current === 'waiting' && !showRegisterModal) {
+            setShowRegisterModal(true);
         }
       } else {
-        setError(recognizeResponse.error || 'Failed to recognize face');
+        isPersonPresentRef.current = false;
+
+        // Avoid replacing a recent successful detection with stale/noisy responses.
+        const recentlyRecognized = Date.now() - lastRecognitionAtRef.current < 2500;
+        if (!recentlyRecognized) {
+          setRecognitionResult(prev => {
+            if (prev?.requires_registration) return prev;
+            if (recognizeResponse?.error) {
+              return {
+                name: prev?.name || 'Unknown',
+                error: recognizeResponse.error,
+                camera_detected: recognizeResponse.camera_detected,
+                person_detected: recognizeResponse.person_detected,
+              };
+            }
+            return { name: 'Unknown' };
+          });
+        }
       }
     } catch (err) {
-      setError(err.error || 'Failed to capture face');
+      isPersonPresentRef.current = false;
+      const recentlyRecognized = Date.now() - lastRecognitionAtRef.current < 2500;
+      if (!recentlyRecognized) {
+        const message = err?.error || err?.message || 'Face processing failed';
+        setRecognitionResult(prev => ({
+          name: prev?.name || 'Unknown',
+          error: message,
+        }));
+      }
+      console.error('Face processing error:', err);
     } finally {
-      setLoading(false);
+      isRecognizingRef.current = false;
     }
   };
 
-  // Step 2: Register new person
-  const handleRegisterPerson = async () => {
-    if (!newPersonName.trim()) {
-      setError('Please enter a name');
-      return;
-    }
+  const setupAudioPipeline = async () => {
+    // Don't setup twice if restarting
+    if (mediaRecorderRef.current) return;
 
     try {
-      setLoading(true);
-      setError(null);
-
-      const response = await faceService.registerPerson(
-        newPersonName.trim(),
-        recognitionResult?.image_path || capturedImage
-      );
-
-      if (response.success) {
-        setRecognitionResult({
-          ...response,
-          name: response.name,
-          person_id: response.person_id,
-          is_new: true,
-          person_image: capturedImage
-        });
-        setStage('recording');
-      } else {
-        setError(response.error || 'Failed to register person');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      audioStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
       }
-    } catch (err) {
-      setError(err.error || 'Failed to register person');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Step 3: Start unlimited meeting recording via browser Mic
-  const handleStartRecording = async () => {
-    try {
-      setError(null);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       
-      audioChunksRef.current = [];
-      recorder.ondataavailable = (e) => {
+      // Extract audio stream for recording
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const audioTracks = stream.getAudioTracks();
+      const audioStream = new MediaStream(audioTracks);
+      
+      const analyser = audioContext.createAnalyser();
+      const microphone = audioContext.createMediaStreamSource(stream);
+      
+      microphone.connect(analyser);
+      analyser.fftSize = 512;
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      // MediaRecorder for actual recording - use audio stream only
+      try {
+        const preferredMimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus'
+          : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '');
+
+        mediaRecorderRef.current = preferredMimeType
+          ? new MediaRecorder(audioStream, { mimeType: preferredMimeType })
+          : new MediaRecorder(audioStream);
+      } catch (e) {
+        // Fallback for browsers that don't support webm
+        mediaRecorderRef.current = new MediaRecorder(audioStream);
+      }
+      
+      mediaRecorderRef.current.ondataavailable = (e) => {
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
       };
+      
+      mediaRecorderRef.current.onstop = processMeeting;
 
-      recorder.onstop = async () => {
-        setIsRecording(false);
-        setStage('processing');
-        setLoading(true);
-
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+      const checkAudioLevel = () => {
+        analyser.getByteFrequencyData(dataArray);
+        const sum = dataArray.reduce((a, b) => a + b, 0);
+        const average = sum / bufferLength;
+        const speaking = average > 10; // Threshold for VAD
         
-        // Stop all tracks to release mic hardware
-        stream.getTracks().forEach(track => track.stop());
+        setVoiceActive(speaking);
 
-        try {
-          // Process audio file
-          const processResponse = await audioService.processAudioFile(audioBlob);
-          
-          if (!processResponse.success) {
-            throw new Error(processResponse.error || 'Failed to process audio');
-          }
-
-          // Create meeting
-          const meetingResponse = await meetingService.createMeeting({
-            person_id: recognitionResult.person_id,
-            person_name: recognitionResult.name,
-            transcript: processResponse.transcript,
-            summary: processResponse.summary,
-            audio_path: processResponse.audio_path,
-            image_path: capturedImage
-          });
-
-          if (meetingResponse.success) {
-            setMeetingResult({
-              ...meetingResponse.meeting,
-              meeting_id: meetingResponse.meeting_id || meetingResponse.meeting?._id,
-              summary: processResponse.summary, 
-              transcript: processResponse.transcript
-            });
-            setStage('complete');
-          } else {
-            throw new Error(meetingResponse.error || 'Failed to create meeting');
-          }
-        } catch (err) {
-          setError(err.message || 'Failed to complete meeting processing');
-          setStage('recording');
-        } finally {
-          setLoading(false);
+        // Use pipelineStatusRef so this rAF callback always reads the live value
+        if (pipelineStatusRef.current === 'recording') {
+            const personRecentlySeen = (Date.now() - lastRecognitionAtRef.current) < PERSON_GRACE_MS;
+            if (!speaking && !personRecentlySeen) {
+                // Person gone AND silent for 12 seconds → end the meeting
+                if (!silenceTimeoutRef.current) {
+                    silenceTimeoutRef.current = setTimeout(() => {
+                        stopSession();
+                    }, 12000);
+                }
+            } else {
+                if (silenceTimeoutRef.current) {
+                    clearTimeout(silenceTimeoutRef.current);
+                    silenceTimeoutRef.current = null;
+                }
+            }
         }
+        requestAnimationFrame(checkAudioLevel);
       };
+      checkAudioLevel();
+    } catch(err) {
+      console.error("Mic access denied", err);
+      setError("Microphone access is required for continuous monitoring.");
+    }
+  };
 
-      recorder.start();
-      setIsRecording(true);
-      setMediaRecorder(recorder);
+  const startSession = (person) => {
+    console.log(`Starting continuous session for ${person.name}`);
+    setPipelineStatus('recording');
+    activeMeetingPersonRef.current = person;
+    audioChunksRef.current = [];
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'inactive') {
+        mediaRecorderRef.current.start(1000);
+    }
+  };
+
+  const stopSession = () => {
+    console.log("Stopping continuous session");
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      // Status becomes processing in onstop
+      setPipelineStatus('processing');
+    }
+  };
+
+  const processMeeting = async () => {
+    try {
+      setPipelineStatus('processing');
+      const recordedMimeType = mediaRecorderRef.current?.mimeType || 'audio/webm';
+      const audioBlob = new Blob(audioChunksRef.current, { type: recordedMimeType });
+      const person = activeMeetingPersonRef.current;
+      if(!person) return;
+
+      if (audioBlob.size < MIN_AUDIO_BYTES) {
+        // No real audio captured — soft reset without showing an error banner.
+        // This happens when the session ends before the person speaks.
+        console.warn('Session too short — no usable speech captured, resetting pipeline.');
+        setPipelineStatus('waiting');
+        activeMeetingPersonRef.current = null;
+        audioChunksRef.current = [];
+        return;
+      }
+      
+      const processResponse = await audioService.processAudioFile(audioBlob);
+      if (!processResponse.success) throw new Error(processResponse.error || "Audio process failed");
+
+      setReviewData({
+         transcript: processResponse.transcript,
+         summary: processResponse.summary,
+         audio_path: processResponse.audio_path
+      });
+      setPipelineStatus('review');
+
+      // Clear recognized person for a brief cooldown? 
+      setRecognitionResult({ name: "Waiting for next person..." });
+
     } catch (err) {
-      setError('Could not access microphone. Please ensure microphone permissions are granted.');
+      console.error('Meeting Processing Failed', err);
+      setError(err.message || 'Failed to complete meeting');
+      setPipelineStatus('waiting');
+      activeMeetingPersonRef.current = null;
+      audioChunksRef.current = [];
     }
   };
 
-  const handleStopRecording = () => {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
-    }
+  const handleSaveMeeting = async () => {
+      try {
+          const person = activeMeetingPersonRef.current;
+          if(!person) return;
+          
+          await meetingService.createMeeting({
+             person_id: person.person_id,
+             person_name: person.name,
+             transcript: reviewData.transcript,
+             summary: reviewData.summary,
+             audio_path: reviewData.audio_path,
+             image_path: capturedImage
+          });
+          
+          setPipelineStatus('waiting');
+          activeMeetingPersonRef.current = null;
+          audioChunksRef.current = [];
+      } catch (err) {
+          setError(err.message || 'Failed to save meeting');
+      }
   };
+
+  const handleCancelReview = () => {
+      setPipelineStatus('waiting');
+      activeMeetingPersonRef.current = null;
+      audioChunksRef.current = [];
+  };
+
+  const handleManualRegister = async () => {
+      if(newPersonName.trim()) {
+        try {
+            setPipelineStatus('processing');
+            const res = await faceService.registerPerson(newPersonName.trim(), capturedImage);
+            if (res.success) {
+                setNewPersonName('');
+                setRecognitionResult(null); // Will rescan automatically
+                setShowRegisterModal(false);
+            } else {
+                setError(res.error || "Registration failed");
+            }
+        } catch(err) {
+            setError(err.error || "Registration failed");
+        } finally {
+            setPipelineStatus('waiting');
+        }
+      }
+  };
+
+  const forceStop = () => stopSession();
 
   return (
-    <div className="max-w-4xl mx-auto">
-      {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Start New Meeting</h1>
-        <p className="mt-1 text-gray-600">Recognize a person and record a meeting</p>
+    <div className="max-w-4xl mx-auto p-6 space-y-6">
+      <div className="mb-4">
+        <h1 className="text-3xl font-bold text-gray-900 border-b pb-2 flex items-center gap-3">
+            <span className="relative flex h-4 w-4 mr-2">
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${pipelineStatus === 'recording' ? 'bg-red-400' : 'bg-green-400'}`}></span>
+                <span className={`relative inline-flex rounded-full h-4 w-4 ${pipelineStatus === 'recording' ? 'bg-red-500' : 'bg-green-500'}`}></span>
+            </span>
+            Continuous Meeting Pipeline
+        </h1>
+        <p className="mt-2 text-gray-600">The system is actively listening for voices and monitoring for faces.</p>
       </div>
 
-      {/* Progress Steps */}
-      <div className="mb-8 flex items-center justify-center space-x-4">
-        <div className={`flex items-center ${stage === 'capture' ? 'text-blue-600' : stage === 'register' || stage === 'recording' || stage === 'processing' || stage === 'complete' ? 'text-green-600' : 'text-gray-400'}`}>
-          <Camera className="w-6 h-6" />
-          <span className="ml-2 font-medium">Capture</span>
-        </div>
-        <div className="w-16 h-0.5 bg-gray-300"></div>
-        <div className={`flex items-center ${stage === 'register' ? 'text-blue-600' : stage === 'recording' || stage === 'processing' || stage === 'complete' ? 'text-green-600' : 'text-gray-400'}`}>
-          <User className="w-6 h-6" />
-          <span className="ml-2 font-medium">Identify</span>
-        </div>
-        <div className="w-16 h-0.5 bg-gray-300"></div>
-        <div className={`flex items-center ${stage === 'recording' || stage === 'processing' ? 'text-blue-600' : stage === 'complete' ? 'text-green-600' : 'text-gray-400'}`}>
-          <Mic className="w-6 h-6" />
-          <span className="ml-2 font-medium">Record</span>
-        </div>
-        <div className="w-16 h-0.5 bg-gray-300"></div>
-        <div className={`flex items-center ${stage === 'complete' ? 'text-green-600' : 'text-gray-400'}`}>
-          <CheckCircle className="w-6 h-6" />
-          <span className="ml-2 font-medium">Complete</span>
-        </div>
-      </div>
-
-      {/* Error Message */}
       {error && (
-        <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4 flex items-start">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start">
           <AlertCircle className="w-5 h-5 text-red-600 mr-3 mt-0.5" />
           <p className="text-red-800">{error}</p>
+          <button className="ml-auto text-sm text-red-800" onClick={() => setError(null)}>Dismiss</button>
         </div>
       )}
 
-      {/* Stage: Capture Face */}
-      {stage === 'capture' && (
-        <div className="bg-white rounded-lg shadow-lg p-8">
-          <div className="text-center">
-            <Camera className="w-16 h-16 text-blue-600 mx-auto mb-4" />
-            <h2 className="text-2xl font-semibold text-gray-900 mb-2">Capture Face</h2>
-            <p className="text-gray-600 mb-8">
-              Click the button below to capture a face from your camera
-            </p>
-
-            {capturedImage && (
-              <div className="mb-6">
-                <img src={capturedImage} alt="Captured" className="mx-auto rounded-lg shadow-md max-w-md" />
-              </div>
-            )}
-
-            <button
-              onClick={handleCaptureFace}
-              disabled={loading}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg font-medium transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center space-x-2 mx-auto"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Capturing...</span>
-                </>
-              ) : (
-                <>
-                  <Camera className="w-5 h-5" />
-                  <span>Capture Face</span>
-                </>
-              )}
-            </button>
-          </div>
+      {recognitionResult?.error && !error && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-start">
+          <AlertCircle className="w-5 h-5 text-amber-600 mr-3 mt-0.5" />
+          <p className="text-amber-900">{recognitionResult.error}</p>
         </div>
       )}
 
-      {/* Stage: Register New Person */}
-      {stage === 'register' && (
-        <div className="bg-white rounded-lg shadow-lg p-8">
-          <div className="text-center mb-6">
-            <User className="w-16 h-16 text-blue-600 mx-auto mb-4" />
-            <h2 className="text-2xl font-semibold text-gray-900 mb-2">New Person Detected</h2>
-            <p className="text-gray-600">Please provide the person's name</p>
-          </div>
-
-          {capturedImage && (
-            <div className="mb-6">
-              <img src={capturedImage} alt="Captured" className="mx-auto rounded-lg shadow-md max-w-xs" />
-            </div>
-          )}
-
-          <div className="max-w-md mx-auto">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Full Name
-            </label>
-            <input
-              type="text"
-              value={newPersonName}
-              onChange={(e) => setNewPersonName(e.target.value)}
-              className="block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Enter person's name"
-              disabled={loading}
-            />
-
-            <div className="mt-6 flex space-x-4">
-              <button
-                onClick={() => setStage('capture')}
-                disabled={loading}
-                className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 px-6 py-3 rounded-lg font-medium transition-colors disabled:bg-gray-100 disabled:cursor-not-allowed"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleRegisterPerson}
-                disabled={loading || !newPersonName.trim()}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
-              >
-                {loading ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    <span>Registering...</span>
-                  </>
-                ) : (
-                  <span>Register & Continue</span>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Stage: Recording */}
-      {stage === 'recording' && recognitionResult && (
-        <div className="bg-white rounded-lg shadow-lg p-8">
-          <div className="text-center mb-8">
-            <div className="mx-auto mb-4 relative w-48 h-48">
-              {recognitionResult.person_image ? (
-                <img 
-                  src={recognitionResult.person_image} 
-                  alt={recognitionResult.name} 
-                  className="w-full h-full object-cover rounded-full border-4 border-green-500 shadow-md"
-                />
-              ) : (
-                <CheckCircle className="w-16 h-16 text-green-600 mx-auto mt-8" />
-              )}
-              {!recognitionResult.is_new && recognitionResult.confidence && (
-                <div className="absolute -bottom-2 -right-2 bg-green-100 text-green-800 text-xs font-bold px-2 py-1 rounded-full border border-green-200">
-                  {(recognitionResult.confidence * 100).toFixed(1)}% Match
-                </div>
-              )}
-            </div>
-            
-            <h2 className="text-2xl font-semibold text-gray-900 mb-2">
-              {recognitionResult.is_new ? 'Person Registered!' : 'Person Recognized!'}
+      {/* Main Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        
+        {/* Left: Camera & Person Status */}
+        <div className="bg-white rounded-lg shadow-lg p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold flex items-center gap-2">
+                <Camera className={isPersonPresentRef.current ? "text-blue-500" : "text-gray-400"} />
+                Camera Feed
             </h2>
-            <p className="text-xl text-gray-700">{recognitionResult.name}</p>
+            <span className="text-xs bg-gray-100 text-gray-800 px-2 py-1 rounded">500ms loop</span>
           </div>
 
-          {recognitionResult.last_meeting && (
-            <div className="mb-8 p-4 bg-blue-50 rounded-lg">
-              <h3 className="font-semibold text-gray-900 mb-2">Last Meeting Summary:</h3>
-              <div className="text-sm text-gray-700 whitespace-pre-line">{recognitionResult.last_meeting.summary}</div>
+          <div className="relative w-full aspect-video bg-gray-100 rounded overflow-hidden flex items-center justify-center border-2 border-dashed border-gray-300">
+             <video 
+                ref={videoRef} 
+                autoPlay 
+                playsInline 
+                muted 
+                className="object-cover w-full h-full"
+             ></video>
+             <canvas ref={canvasRef} className="hidden"></canvas>
+             
+             {!audioStreamRef.current && (
+                <div className="absolute inset-0 bg-gray-100 bg-opacity-90 flex flex-col items-center justify-center text-gray-400">
+                    <Camera className="w-8 h-8 mb-2" />
+                    Waiting for camera...
+                </div>
+             )}
+
+             {/* Highlight overlay for active detection */}
+             {recognitionResult && (
+                 <div className={`absolute bottom-2 left-2 right-2 ${recognitionResult.error ? 'bg-red-600' : 'bg-black bg-opacity-70'} text-white px-3 py-2 rounded text-center font-medium backdrop-blur-sm truncate`}>
+                     {recognitionResult.error ? recognitionResult.error : recognitionResult.name}
+                     {recognitionResult.confidence && ` (${(recognitionResult.confidence * 100).toFixed(0)}%)`}
+                 </div>
+             )}
+             {/* Pulsing red border when recording */}
+             {pipelineStatus === 'recording' && (
+                <div className="absolute inset-0 border-4 border-red-500 rounded-lg animate-pulse"></div>
+             )}
+          </div>
+
+          {/* Registration Prompt if needed is now a modal */}
+
+          {recognitionResult?.person_image && (
+            <div className="mt-4 p-3 border border-gray-200 bg-gray-50 rounded-lg">
+              <p className="text-xs text-gray-600 mb-2">Detected person image</p>
+              <img
+                src={recognitionResult.person_image}
+                alt={recognitionResult.name || 'Detected person'}
+                className="w-24 h-24 object-cover rounded-lg border border-gray-200"
+              />
             </div>
           )}
 
-          <div className="max-w-md mx-auto text-center">
-            {isRecording ? (
-              <div className="mb-6 flex flex-col items-center">
-                <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center animate-pulse mb-4">
-                  <Mic className="w-8 h-8 text-red-600" />
-                </div>
-                <p className="text-red-600 font-medium tracking-wide">Recording in progress...</p>
-                <p className="text-gray-500 text-sm mt-1">Speak into your microphone</p>
+          {/* Previous Meeting Summary Popup/Card */}
+          {recognitionResult?.last_meeting && pipelineStatus === 'waiting' && (
+            <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg animate-in fade-in slide-in-from-top-4 duration-500">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-bold text-green-800 flex items-center gap-2">
+                  <CheckCircle size={14}/> Previous Meeting with {recognitionResult.name}
+                </h3>
+                <span className="text-[10px] text-green-600 font-medium">
+                  {new Date(recognitionResult.last_meeting.timestamp).toLocaleDateString()}
+                </span>
               </div>
-            ) : (
-              <p className="text-gray-600 mb-6">
-                Click below to start an unlimited recording. Press stop when the meeting is over.
-              </p>
+              <div className="text-xs text-green-700 line-clamp-3 italic">
+                "{recognitionResult.last_meeting.summary}"
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Right: Audio & Meeting Status */}
+        <div className="bg-white rounded-lg shadow-lg p-6 flex flex-col">
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+            {voiceActive ? <Mic className="text-green-500" /> : <MicOff className="text-gray-400" />}
+            Audio & Session Status
+          </h2>
+
+          <div className="flex-1 flex flex-col items-center justify-center space-y-6">
+            
+            {/* Core Status indicator */}
+            <div className="text-center">
+                {pipelineStatus === 'waiting' && (
+                    <div className="text-gray-500 flex flex-col items-center">
+                        <CheckCircle size={48} className="mb-3 text-gray-300" />
+                        <p className="text-lg font-medium text-gray-700">Waiting for participants</p>
+                    </div>
+                )}
+
+                {pipelineStatus === 'recording' && (
+                    <div className="text-red-600 flex flex-col items-center">
+                        <div className="relative mb-4">
+                            <Mic size={64} />
+                            <div className="absolute inset-0 bg-red-500 rounded-full -z-10 animate-pulse opacity-70"></div>
+                        </div>
+                        <p className="text-2xl font-bold">Session in progress...</p>
+                        <p className="text-md mt-2 text-gray-600">
+                            Recording <strong>{activeMeetingPersonRef.current?.name}</strong>
+                        </p>
+                    </div>
+                )}
+
+                {pipelineStatus === 'processing' && (
+                    <div className="text-blue-600 flex flex-col items-center">
+                        <Loader2 size={48} className="mb-3 animate-spin" />
+                        <p className="text-lg font-medium">Processing Meeting...</p>
+                        <p className="text-sm text-gray-500">Transcribing and saving results.</p>
+                    </div>
+                )}
+            </div>
+
+            {/* Manual Start for Unknown Person */}
+            {pipelineStatus === 'waiting' && recognitionResult?.name === 'Unknown' && !recognitionResult?.requires_registration && (
+                <button 
+                  onClick={() => startSession({ name: 'Unknown', person_id: null })}
+                  className="mt-8 bg-green-600 hover:bg-green-700 text-white px-8 py-3 rounded-full font-bold text-lg transition shadow-lg hover:shadow-xl"
+                >
+                  Start Recording for Unknown
+                </button>
             )}
 
-            <div className="mt-2 flex space-x-4">
-              <button
-                onClick={() => setStage('capture')}
-                disabled={loading || isRecording}
-                className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 px-6 py-3 rounded-lg font-medium transition-colors disabled:bg-gray-100 disabled:cursor-not-allowed"
-              >
-                Recapture Face
-              </button>
-
-              {isRecording ? (
-                <button
-                  onClick={handleStopRecording}
-                  disabled={loading}
-                  className="flex-1 bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-medium transition-colors flex items-center justify-center space-x-2"
+            {/* Start Recording for Known Person */}
+            {pipelineStatus === 'waiting' && recognitionResult && recognitionResult.name !== 'Unknown' && !recognitionResult.requires_registration && (
+                <button 
+                  onClick={() => startSession(recognitionResult)}
+                  className="mt-8 bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-full font-bold text-lg transition shadow-lg hover:shadow-xl flex items-center gap-2"
                 >
-                  <Square className="w-5 h-5 fill-current" />
-                  <span>Stop Recording</span>
+                  <Mic size={24} />
+                  Start Recording for {recognitionResult.name}
                 </button>
-              ) : (
-                <button
-                  onClick={handleStartRecording}
-                  disabled={loading}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium transition-colors flex items-center justify-center space-x-2"
+            )}
+
+            {/* Manual Override control */}
+            {pipelineStatus === 'recording' && (
+                <button 
+                  onClick={forceStop}
+                  className="mt-8 bg-red-600 hover:bg-red-700 text-white px-10 py-4 rounded-full font-bold text-xl transition shadow-lg hover:shadow-xl"
                 >
-                  <Mic className="w-5 h-5" />
-                  <span>Start Recording</span>
+                  Stop Recording
                 </button>
-              )}
-            </div>
+            )}
+
           </div>
         </div>
-      )}
 
-      {/* Stage: Processing */}
-      {stage === 'processing' && (
-        <div className="bg-white rounded-lg shadow-lg p-8">
-          <div className="text-center">
-            <LoadingSpinner size="xl" />
-            <h2 className="text-2xl font-semibold text-gray-900 mt-6 mb-2">Processing Meeting</h2>
-            <p className="text-gray-600 mb-4">
-              Recording audio, transcribing, and generating summary...
-            </p>
-            <div className="max-w-md mx-auto space-y-2 text-left">
-              <div className="flex items-center space-x-3 text-sm text-gray-600">
-                <CheckCircle className="w-5 h-5 text-green-600" />
-                <span>Recording audio from microphone</span>
-              </div>
-              <div className="flex items-center space-x-3 text-sm text-gray-600">
-                <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
-                <span>Transcribing with Whisper AI</span>
-              </div>
-              <div className="flex items-center space-x-3 text-sm text-gray-400">
-                <div className="w-5 h-5 rounded-full border-2 border-gray-300"></div>
-                <span>Generating summary with Groq AI</span>
-              </div>
-              <div className="flex items-center space-x-3 text-sm text-gray-400">
-                <div className="w-5 h-5 rounded-full border-2 border-gray-300"></div>
-                <span>Saving to database</span>
-              </div>
+        {/* Full screen review modal */}
+        {pipelineStatus === 'review' && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
+                <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+                    <div className="p-6 border-b border-gray-200">
+                        <h2 className="text-2xl font-bold text-gray-800">Review Meeting: {activeMeetingPersonRef.current?.name}</h2>
+                        <p className="text-sm text-gray-500">Edit the generated transcript and summary before saving.</p>
+                    </div>
+                    <div className="p-6 flex-1 overflow-y-auto space-y-6">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">Summary</label>
+                            <textarea
+                                className="w-full h-40 p-3 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
+                                value={reviewData.summary}
+                                onChange={(e) => setReviewData({...reviewData, summary: e.target.value})}
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">Transcript</label>
+                            <textarea
+                                className="w-full h-64 p-3 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
+                                value={reviewData.transcript}
+                                onChange={(e) => setReviewData({...reviewData, transcript: e.target.value})}
+                            />
+                        </div>
+                    </div>
+                    <div className="p-6 border-t border-gray-200 flex justify-end gap-4 bg-gray-50">
+                        <button 
+                            onClick={handleCancelReview}
+                            className="px-6 py-2 border border-gray-300 text-gray-700 rounded hover:bg-gray-100"
+                        >
+                            Cancel
+                        </button>
+                        <button 
+                            onClick={handleSaveMeeting}
+                            className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 font-medium"
+                        >
+                            Save Meeting
+                        </button>
+                    </div>
+                </div>
             </div>
-            <p className="text-sm text-gray-500 mt-6">
-              This may take 30-60 seconds depending on recording length
-            </p>
-          </div>
-        </div>
-      )}
+        )}
 
-      {/* Stage: Complete */}
-      {stage === 'complete' && meetingResult && (
-        <div className="bg-white rounded-lg shadow-lg p-8">
-          <div className="text-center mb-8">
-            <CheckCircle className="w-20 h-20 text-green-600 mx-auto mb-4" />
-            <h2 className="text-3xl font-bold text-gray-900 mb-2">Meeting Completed!</h2>
-            <p className="text-gray-600">Your meeting has been recorded and processed</p>
-          </div>
-
-          <div className="space-y-6">
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <h3 className="font-semibold text-gray-900 mb-2">Summary:</h3>
-              <div className="text-sm text-gray-700 whitespace-pre-line">
-                {meetingResult.summary}
-              </div>
+        {/* Full screen register modal */}
+        {showRegisterModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
+                <div className="bg-white rounded-lg shadow-xl w-full max-w-md overflow-hidden">
+                    <div className="p-6 border-b border-gray-200">
+                        <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2"><User size={24} className="text-blue-500"/> New Person Detected</h2>
+                        <p className="text-sm text-gray-500 mt-1">Please enter a name to register this new person in the database.</p>
+                    </div>
+                    <div className="p-6 space-y-4">
+                        {capturedImage && (
+                            <div className="flex justify-center">
+                                <img src={capturedImage} alt="Captured" className="w-32 h-32 object-cover rounded-full border-4 border-blue-100" />
+                            </div>
+                        )}
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">Full Name</label>
+                            <input 
+                                type="text" 
+                                placeholder="Enter Name..." 
+                                className="w-full px-4 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
+                                value={newPersonName}
+                                onChange={(e) => setNewPersonName(e.target.value)}
+                                autoFocus
+                            />
+                        </div>
+                    </div>
+                    <div className="p-6 border-t border-gray-200 flex justify-end gap-3 bg-gray-50">
+                        <button 
+                            onClick={() => {
+                                setShowRegisterModal(false);
+                                setRecognitionResult({ name: "Unknown" });
+                            }}
+                            className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded"
+                        >
+                            Skip
+                        </button>
+                        <button 
+                            onClick={handleManualRegister}
+                            disabled={!newPersonName.trim() || pipelineStatus === 'processing'}
+                            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 font-medium"
+                        >
+                            {pipelineStatus === 'processing' ? 'Registering...' : 'Register Person'}
+                        </button>
+                    </div>
+                </div>
             </div>
+        )}
 
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <h3 className="font-semibold text-gray-900 mb-2">Transcript:</h3>
-              <p className="text-sm text-gray-700">
-                {meetingResult.transcript.substring(0, 300)}
-                {meetingResult.transcript.length > 300 && '...'}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <button
-                onClick={() => navigate(`/meeting/${meetingResult.meeting_id}`)}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium transition-colors"
-              >
-                View Full Details
-              </button>
-              <button
-                onClick={() => {
-                  setStage('capture');
-                  setCapturedImage(null);
-                  setRecognitionResult(null);
-                  setMeetingResult(null);
-                  setError(null);
-                }}
-                className="bg-gray-200 hover:bg-gray-300 text-gray-800 px-6 py-3 rounded-lg font-medium transition-colors"
-              >
-                Start Another Meeting
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
+

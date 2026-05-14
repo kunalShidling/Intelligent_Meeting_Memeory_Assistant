@@ -11,7 +11,12 @@ export const faceService = {
     return await api.post('/face/detect', { image_path: imagePath });
   },
 
-  // Recognize person from image
+  // Recognize person from base64 image data
+  recognizeFaceBase64: async (base64Image) => {
+    return await api.post('/face/recognize', { image_data: base64Image });
+  },
+
+  // Recognize person from image path
   recognizeFace: async (imagePath) => {
     return await api.post('/face/recognize', { image_path: imagePath });
   },

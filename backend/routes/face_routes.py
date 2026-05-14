@@ -9,6 +9,7 @@ import os
 import base64
 import tempfile
 import logging
+import threading
 from datetime import datetime
 
 # Add parent directory to path
@@ -31,20 +32,36 @@ detector = None
 embedder = None
 database = None
 recognizer = None
+components_lock = threading.Lock()
 
 def init_components():
     """Initialize face recognition components."""
     global camera, detector, embedder, database, recognizer
 
-    if detector is None:
+    if all(component is not None for component in (detector, embedder, database, recognizer, camera)):
+        return
+
+    with components_lock:
+        if all(component is not None for component in (detector, embedder, database, recognizer, camera)):
+            return
+
         logger.info("Initializing face recognition components...")
-        detector = FaceDetector()
-        embedder = FaceEmbedder()
-        database = FaceDatabase()
-        database.connect()
-        recognizer = FaceRecognizer(database)
-        camera = Camera()
-        logger.info("Components initialized successfully")
+        try:
+            detector = FaceDetector()
+            embedder = FaceEmbedder()
+            database = FaceDatabase()
+            database.connect()
+            recognizer = FaceRecognizer(database)
+            camera = Camera()
+            logger.info("Components initialized successfully")
+        except Exception:
+            # Reset globals to avoid partially initialized shared state.
+            detector = None
+            embedder = None
+            database = None
+            recognizer = None
+            camera = None
+            raise
 
 @face_bp.route('/capture', methods=['POST'])
 def capture_face():
@@ -116,14 +133,38 @@ def detect_face():
 @face_bp.route('/recognize', methods=['POST'])
 def recognize_face():
     """Recognize person from image."""
+    temp_path = None
     try:
         init_components()
 
-        data = request.json
+        data = request.get_json(silent=True) or {}
         image_path = data.get('image_path')
+        image_data = data.get('image_data')
 
-        if not image_path:
-            return jsonify({'error': 'No image path provided'}), 400
+        if not image_path and not image_data:
+            return jsonify({
+                'success': False,
+                'error': 'No image provided',
+                'camera_detected': False
+            }), 400
+
+        if image_data:
+            # It's a base64 image (data:image/jpeg;base64,...)
+            if ',' in image_data:
+                image_data = image_data.split(',')[1]
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            temp_path = os.path.join(tempfile.gettempdir(), f'recognize_{timestamp}.jpg')
+            try:
+                with open(temp_path, 'wb') as f:
+                    f.write(base64.b64decode(image_data))
+            except Exception as decode_error:
+                logger.warning(f"Invalid image data supplied for recognition: {decode_error}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Invalid camera image data',
+                    'camera_detected': False
+                }), 400
+            image_path = temp_path
 
         # Detect face
         success, face, detection_info = detector.detect_and_extract_largest_face(image_path)
@@ -131,7 +172,10 @@ def recognize_face():
         if not success:
             return jsonify({
                 'success': False,
-                'error': 'No face detected'
+                'error': 'No face detected in the camera frame. Make sure the camera is on and your face is visible.',
+                'camera_detected': True,
+                'person_detected': False,
+                'requires_registration': False
             }), 200
 
         # Generate embedding
@@ -140,7 +184,9 @@ def recognize_face():
         if not success:
             return jsonify({
                 'success': False,
-                'error': 'Failed to generate embedding'
+                'error': 'Failed to generate embedding from the detected face',
+                'camera_detected': True,
+                'person_detected': True
             }), 200
 
         # Recognize
@@ -152,6 +198,9 @@ def recognize_face():
         if name is None:
             return jsonify({
                 'success': False,
+                'error': 'Face detected, but the person is not registered yet',
+                'camera_detected': True,
+                'person_detected': True,
                 'is_new': True,
                 'requires_registration': True
             }), 200
@@ -165,15 +214,23 @@ def recognize_face():
             logger.info("Person recognized! Updating their image and embedding...")
             from opencv.config import UPDATE_THRESHOLD, DUPLICATE_THRESHOLD
             
+            # Copy image to persistent storage
+            import shutil
+            images_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'meeting_data', 'images')
+            os.makedirs(images_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            persistent_image_path = os.path.join(images_dir, f'person_{person_id}_{timestamp}.jpg')
+            shutil.copy(image_path, persistent_image_path)
+            
             # Update embedding and image if confidence is high enough
             if confidence and UPDATE_THRESHOLD <= confidence < DUPLICATE_THRESHOLD:
                 logger.info(f"High confidence ({confidence:.4f}). Updating embedding and image for {name}.")
-                database.update_person_embedding_and_image(person_id, embedding, image_path)
+                database.update_person_embedding_and_image(person_id, embedding, persistent_image_path)
                 # Clear recognizer cache
                 recognizer._cached_records = None
             else:
                 # Otherwise, just update the image to the most recent one
-                database.update_person_image(person_id, image_path)
+                database.update_person_image(person_id, persistent_image_path)
 
             # Re-fetch person record to get the updated image
             person = database.get_person_by_name(name)
@@ -202,12 +259,25 @@ def recognize_face():
             'confidence': float(confidence) if confidence else None,
             'person_id': person_id,
             'person_image': person_image_base64,
-            'last_meeting': last_meeting
+            'last_meeting': last_meeting,
+            'camera_detected': True,
+            'person_detected': True
         })
 
     except Exception as e:
         logger.error(f"Error recognizing face: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'success': False,
+            'error': f'Face recognition failed: {str(e)}',
+            'camera_detected': False
+        }), 500
+    finally:
+        # Clean up temporary file
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception as e:
+                logger.warning(f"Failed to remove temp file {temp_path}: {e}")
 
 @face_bp.route('/register', methods=['POST'])
 def register_person():
@@ -218,9 +288,24 @@ def register_person():
         data = request.json
         name = data.get('name')
         image_path = data.get('image_path')
+        image_data = data.get('image_data')
 
-        if not name or not image_path:
-            return jsonify({'error': 'Name and image path required'}), 400
+        if not name or (not image_path and not image_data):
+            return jsonify({'error': 'Name and image required'}), 400
+
+        # If it's passed as image_path but happens to be base64
+        if image_path and image_path.startswith('data:image'):
+            image_data = image_path
+            image_path = None
+
+        if image_data:
+            if ',' in image_data:
+                image_data = image_data.split(',')[1]
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            temp_path = os.path.join(tempfile.gettempdir(), f'register_{timestamp}.jpg')
+            with open(temp_path, 'wb') as f:
+                f.write(base64.b64decode(image_data))
+            image_path = temp_path
 
         # Detect face
         success, face, detection_info = detector.detect_and_extract_largest_face(image_path)

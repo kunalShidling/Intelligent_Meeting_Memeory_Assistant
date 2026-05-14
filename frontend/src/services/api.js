@@ -30,6 +30,14 @@ const shouldRetry = (error) => {
 api.interceptors.request.use(
   (config) => {
     config.retryCount = config.retryCount || 0;
+
+    // IMPORTANT: When sending FormData, the browser must set Content-Type itself
+    // so it can include the multipart boundary. Deleting the global JSON header
+    // here lets Axios/browser do the right thing automatically.
+    if (config.data instanceof FormData) {
+      delete config.headers['Content-Type'];
+    }
+
     return config;
   },
   (error) => {
