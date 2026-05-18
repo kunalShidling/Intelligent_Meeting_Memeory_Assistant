@@ -250,14 +250,15 @@ class FaceRecognizer:
             if recognized:
                 return name, False, confidence
             
-            # Person not recognized - register as new
-            logger.info("Person not recognized - proceeding with registration")
-            
-            # Get name for new person
+            # Person not recognized - register as new (only when callback is provided)
             if ask_for_name_callback is None:
-                new_name = input("Enter name for new person: ").strip()
-            else:
-                new_name = ask_for_name_callback()
+                logger.info("No name callback provided; skipping auto-registration")
+                return None, False, 0.0
+
+            logger.info("Person not recognized - proceeding with registration")
+
+            # Get name for new person
+            new_name = ask_for_name_callback()
             
             if not new_name:
                 logger.error("No name provided for new person")

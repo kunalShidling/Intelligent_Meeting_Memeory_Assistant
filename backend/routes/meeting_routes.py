@@ -51,6 +51,9 @@ def start_meeting():
         data = request.json
         person_id = data.get('person_id')
         person_name = data.get('person_name')
+        participant_ids = data.get('participant_ids') or []
+        participant_names = data.get('participant_names') or []
+        participant_group_key = data.get('participant_group_key')
         duration = data.get('duration', 30)
         image_path = data.get('image_path')
 
@@ -123,8 +126,20 @@ def create_meeting():
         audio_path = data.get('audio_path')
         image_path = data.get('image_path')
 
-        if not person_id or not person_name or not transcript:
-            return jsonify({'error': 'Person ID, name, and transcript required'}), 400
+        if not transcript:
+            return jsonify({'error': 'Transcript required'}), 400
+
+        if not person_id and not participant_ids:
+            return jsonify({'error': 'Person ID or participant IDs required'}), 400
+
+        if not person_name and not participant_names:
+            return jsonify({'error': 'Person name or participant names required'}), 400
+
+        if not person_id and participant_ids:
+            person_id = participant_ids[0]
+
+        if not person_name and participant_names:
+            person_name = participant_names[0]
 
         # Generate summary if not provided
         if not summary:
@@ -168,7 +183,10 @@ def create_meeting():
             transcript=transcript,
             summary=summary,
             audio_path=audio_path,
-            image_path=image_path
+            image_path=image_path,
+            participant_ids=participant_ids,
+            participant_names=participant_names,
+            participant_group_key=participant_group_key
         )
 
         return jsonify({
@@ -195,7 +213,8 @@ def get_meeting(meeting_id):
 
         # Convert ObjectId to string
         meeting['_id'] = str(meeting['_id'])
-        meeting['person_id'] = str(meeting['person_id'])
+        if meeting.get('person_id') is not None:
+            meeting['person_id'] = str(meeting['person_id'])
         meeting['timestamp'] = meeting['timestamp'].isoformat()
 
         return jsonify({
@@ -228,7 +247,8 @@ def list_meetings():
         # Convert ObjectIds to strings
         for meeting in meetings:
             meeting['_id'] = str(meeting['_id'])
-            meeting['person_id'] = str(meeting['person_id'])
+            if meeting.get('person_id') is not None:
+                meeting['person_id'] = str(meeting['person_id'])
             meeting['timestamp'] = meeting['timestamp'].isoformat()
 
         return jsonify({
@@ -254,7 +274,8 @@ def get_person_meetings(person_id):
         # Convert ObjectIds and timestamps
         for meeting in meetings:
             meeting['_id'] = str(meeting['_id'])
-            meeting['person_id'] = str(meeting['person_id'])
+            if meeting.get('person_id') is not None:
+                meeting['person_id'] = str(meeting['person_id'])
             meeting['timestamp'] = meeting['timestamp'].isoformat()
 
         return jsonify({
@@ -305,14 +326,16 @@ def search_meetings():
             '$or': [
                 {'transcript': {'$regex': keyword, '$options': 'i'}},
                 {'summary': {'$regex': keyword, '$options': 'i'}},
-                {'person_name': {'$regex': keyword, '$options': 'i'}}
+                {'person_name': {'$regex': keyword, '$options': 'i'}},
+                {'participant_names': {'$regex': keyword, '$options': 'i'}}
             ]
         }).sort('timestamp', -1))
 
         # Convert ObjectIds
         for meeting in meetings:
             meeting['_id'] = str(meeting['_id'])
-            meeting['person_id'] = str(meeting['person_id'])
+            if meeting.get('person_id') is not None:
+                meeting['person_id'] = str(meeting['person_id'])
             meeting['timestamp'] = meeting['timestamp'].isoformat()
 
         return jsonify({

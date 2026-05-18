@@ -166,10 +166,10 @@ def recognize_face():
                 }), 400
             image_path = temp_path
 
-        # Detect face
-        success, face, detection_info = detector.detect_and_extract_largest_face(image_path)
+        # Detect all faces in frame
+        faces = detector.detect_and_extract_all_faces(image_path)
 
-        if not success:
+        if not faces:
             return jsonify({
                 'success': False,
                 'error': 'No face detected in the camera frame. Make sure the camera is on and your face is visible.',
@@ -178,88 +178,96 @@ def recognize_face():
                 'requires_registration': False
             }), 200
 
-        # Generate embedding
-        success, embedding = embedder.embed_face(face)
+        results = []
+        for face_img, detection_info in faces:
+            # Generate embedding
+            success, embedding = embedder.embed_face(face_img)
+            if not success:
+                results.append({
+                    'name': 'Unknown',
+                    'confidence': None,
+                    'person_id': None,
+                    'requires_registration': True,
+                    'box': detection_info.get('box'),
+                    'camera_detected': True,
+                    'person_detected': True
+                })
+                continue
 
-        if not success:
-            return jsonify({
-                'success': False,
-                'error': 'Failed to generate embedding from the detected face',
+            # Recognize only (no backend prompt). New faces are handled in the frontend.
+            recognized, name, confidence = recognizer.recognize(embedding)
+
+            if not recognized or name is None:
+                results.append({
+                    'name': 'Unregistered',
+                    'confidence': float(confidence) if confidence else None,
+                    'person_id': None,
+                    'requires_registration': True,
+                    'box': detection_info.get('box'),
+                    'camera_detected': True,
+                    'person_detected': True
+                })
+                continue
+
+            # Get person details
+            person = database.get_person_by_name(name)
+            person_id = str(person['_id']) if person else None
+
+            # Only update image/embedding if person was recognized successfully
+            if person_id:
+                logger.info("Person recognized! Updating their image and embedding...")
+                from opencv.config import UPDATE_THRESHOLD, DUPLICATE_THRESHOLD
+
+                # Copy image to persistent storage
+                import shutil
+                images_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'meeting_data', 'images')
+                os.makedirs(images_dir, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                persistent_image_path = os.path.join(images_dir, f'person_{person_id}_{timestamp}.jpg')
+                shutil.copy(image_path, persistent_image_path)
+
+                # Update embedding and image if confidence is high enough
+                if confidence and UPDATE_THRESHOLD <= confidence < DUPLICATE_THRESHOLD:
+                    logger.info(f"High confidence ({confidence:.4f}). Updating embedding and image for {name}.")
+                    database.update_person_embedding_and_image(person_id, embedding, persistent_image_path)
+                    recognizer._cached_records = None
+                else:
+                    database.update_person_image(person_id, persistent_image_path)
+
+                person = database.get_person_by_name(name)
+
+            # Load the registered person's photo in base64
+            person_image_base64 = None
+            if person and person.get('image_path') and os.path.exists(person['image_path']):
+                with open(person['image_path'], 'rb') as img_file:
+                    person_image_base64 = 'data:image/jpeg;base64,' + base64.b64encode(img_file.read()).decode('utf-8')
+
+            # Get last meeting for recognized person
+            last_meeting = None
+            if person_id:
+                meeting = database.get_last_meeting(person_id)
+                if meeting:
+                    last_meeting = {
+                        'timestamp': meeting['timestamp'].isoformat(),
+                        'summary': meeting['summary'],
+                        'transcript': meeting['transcript'][:200] + '...' if len(meeting['transcript']) > 200 else meeting['transcript']
+                    }
+
+            results.append({
+                'name': name,
+                'confidence': float(confidence) if confidence else None,
+                'person_id': person_id,
+                'requires_registration': False,
+                'box': detection_info.get('box'),
+                'person_image': person_image_base64,
+                'last_meeting': last_meeting,
                 'camera_detected': True,
                 'person_detected': True
-            }), 200
-
-        # Recognize
-        name, is_new, confidence = recognizer.recognize_or_register(
-            embedding,
-            ask_for_name_callback=None  # Don't ask for name in API
-        )
-
-        if name is None:
-            return jsonify({
-                'success': False,
-                'error': 'Face detected, but the person is not registered yet',
-                'camera_detected': True,
-                'person_detected': True,
-                'is_new': True,
-                'requires_registration': True
-            }), 200
-
-        # Get person details
-        person = database.get_person_by_name(name)
-        person_id = str(person['_id']) if person else None
-
-        # Only update image/embedding if person was recognized successfully and not just registered
-        if not is_new and person_id:
-            logger.info("Person recognized! Updating their image and embedding...")
-            from opencv.config import UPDATE_THRESHOLD, DUPLICATE_THRESHOLD
-            
-            # Copy image to persistent storage
-            import shutil
-            images_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'meeting_data', 'images')
-            os.makedirs(images_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            persistent_image_path = os.path.join(images_dir, f'person_{person_id}_{timestamp}.jpg')
-            shutil.copy(image_path, persistent_image_path)
-            
-            # Update embedding and image if confidence is high enough
-            if confidence and UPDATE_THRESHOLD <= confidence < DUPLICATE_THRESHOLD:
-                logger.info(f"High confidence ({confidence:.4f}). Updating embedding and image for {name}.")
-                database.update_person_embedding_and_image(person_id, embedding, persistent_image_path)
-                # Clear recognizer cache
-                recognizer._cached_records = None
-            else:
-                # Otherwise, just update the image to the most recent one
-                database.update_person_image(person_id, persistent_image_path)
-
-            # Re-fetch person record to get the updated image
-            person = database.get_person_by_name(name)
-
-        # Load the registered person's photo in base64
-        person_image_base64 = None
-        if person and person.get('image_path') and os.path.exists(person['image_path']):
-            with open(person['image_path'], 'rb') as img_file:
-                person_image_base64 = 'data:image/jpeg;base64,' + base64.b64encode(img_file.read()).decode('utf-8')
-
-        # Get last meeting if returning person
-        last_meeting = None
-        if not is_new and person_id:
-            meeting = database.get_last_meeting(person_id)
-            if meeting:
-                last_meeting = {
-                    'timestamp': meeting['timestamp'].isoformat(),
-                    'summary': meeting['summary'],
-                    'transcript': meeting['transcript'][:200] + '...' if len(meeting['transcript']) > 200 else meeting['transcript']
-                }
+            })
 
         return jsonify({
             'success': True,
-            'name': name,
-            'is_new': is_new,
-            'confidence': float(confidence) if confidence else None,
-            'person_id': person_id,
-            'person_image': person_image_base64,
-            'last_meeting': last_meeting,
+            'faces': results,
             'camera_detected': True,
             'person_detected': True
         })

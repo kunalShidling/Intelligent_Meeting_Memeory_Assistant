@@ -86,6 +86,7 @@ class FaceDatabase:
             # Create meetings collection and indexes
             self.meetings_collection = self.db['meetings']
             self.meetings_collection.create_index([("person_id", ASCENDING)])
+            self.meetings_collection.create_index([("participant_ids", ASCENDING)])
             self.meetings_collection.create_index([("timestamp", ASCENDING)])
             
             logger.debug("Database indexes created")
@@ -391,7 +392,10 @@ class FaceDatabase:
         transcript: str,
         summary: str,
         audio_path: Optional[str] = None,
-        image_path: Optional[str] = None
+        image_path: Optional[str] = None,
+        participant_ids: Optional[List[str]] = None,
+        participant_names: Optional[List[str]] = None,
+        participant_group_key: Optional[str] = None
     ) -> Optional[str]:
         """
         Store a meeting record for a person.
@@ -412,14 +416,20 @@ class FaceDatabase:
                 logger.error("Database not connected")
                 return None
             
+            normalized_participant_ids = [str(pid) for pid in participant_ids] if participant_ids else []
+            normalized_participant_names = [str(name) for name in participant_names] if participant_names else []
+
             meeting_doc = {
-                'person_id': person_id,
+                'person_id': str(person_id) if person_id else None,
                 'person_name': person_name,
                 'timestamp': datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow(),
                 'transcript': transcript,
                 'summary': summary,
                 'audio_path': audio_path,
-                'image_path': image_path
+                'image_path': image_path,
+                'participant_ids': normalized_participant_ids,
+                'participant_names': normalized_participant_names,
+                'participant_group_key': participant_group_key
             }
             
             result = self.meetings_collection.insert_one(meeting_doc)
@@ -447,7 +457,12 @@ class FaceDatabase:
                 return None
             
             meeting = self.meetings_collection.find_one(
-                {'person_id': person_id},
+                {
+                    '$or': [
+                        {'person_id': str(person_id)},
+                        {'participant_ids': str(person_id)}
+                    ]
+                },
                 sort=[('timestamp', -1)]
             )
             
@@ -473,7 +488,12 @@ class FaceDatabase:
                 return []
             
             meetings = list(self.meetings_collection.find(
-                {'person_id': person_id}
+                {
+                    '$or': [
+                        {'person_id': str(person_id)},
+                        {'participant_ids': str(person_id)}
+                    ]
+                }
             ).sort('timestamp', -1))
             
             return meetings
