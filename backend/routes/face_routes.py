@@ -10,6 +10,7 @@ import base64
 import tempfile
 import logging
 import threading
+import time
 from datetime import datetime
 
 # Add parent directory to path
@@ -20,6 +21,8 @@ from opencv.detector import FaceDetector
 from opencv.embedder import FaceEmbedder
 from opencv.database import FaceDatabase
 from opencv.recognizer import FaceRecognizer
+from opencv.face_tracker import FaceTracker
+from opencv import config as opencv_config
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +35,18 @@ detector = None
 embedder = None
 database = None
 recognizer = None
+tracker = None
 components_lock = threading.Lock()
 
 def init_components():
     """Initialize face recognition components."""
-    global camera, detector, embedder, database, recognizer
+    global camera, detector, embedder, database, recognizer, tracker
 
-    if all(component is not None for component in (detector, embedder, database, recognizer, camera)):
+    if all(component is not None for component in (detector, embedder, database, recognizer, camera, tracker)):
         return
 
     with components_lock:
-        if all(component is not None for component in (detector, embedder, database, recognizer, camera)):
+        if all(component is not None for component in (detector, embedder, database, recognizer, camera, tracker)):
             return
 
         logger.info("Initializing face recognition components...")
@@ -53,6 +57,7 @@ def init_components():
             database.connect()
             recognizer = FaceRecognizer(database)
             camera = Camera()
+            tracker = FaceTracker()
             logger.info("Components initialized successfully")
         except Exception:
             # Reset globals to avoid partially initialized shared state.
@@ -123,7 +128,7 @@ def detect_face():
         return jsonify({
             'success': True,
             'confidence': float(detection_info['confidence']),
-            'bbox': detection_info['bbox'].tolist() if 'bbox' in detection_info else None
+            'box': detection_info.get('box')
         })
 
     except Exception as e:
@@ -178,87 +183,104 @@ def recognize_face():
                 'requires_registration': False
             }), 200
 
-        results = []
+        detections = []
         for face_img, detection_info in faces:
-            # Generate embedding
-            success, embedding = embedder.embed_face(face_img)
-            if not success:
-                results.append({
-                    'name': 'Unknown',
-                    'confidence': None,
-                    'person_id': None,
-                    'requires_registration': True,
-                    'box': detection_info.get('box'),
-                    'camera_detected': True,
-                    'person_detected': True
-                })
+            detections.append({
+                'face_image': face_img,
+                'box': detection_info.get('box'),
+                'confidence': detection_info.get('confidence')
+            })
+
+        tracked_faces = tracker.update(detections)
+        results = []
+        now = datetime.now().timestamp()
+
+        for track in tracked_faces:
+            if track.face_image is None:
                 continue
 
-            # Recognize only (no backend prompt). New faces are handled in the frontend.
-            recognized, name, confidence = recognizer.recognize(embedding)
+            needs_embedding = tracker.should_refresh_embedding(track)
+            if needs_embedding:
+                success, embedding = embedder.embed_face(track.face_image)
+                if success:
+                    track.embedding = embedding
+                    track.last_embedding_at = time.time()
 
-            if not recognized or name is None:
-                results.append({
-                    'name': 'Unregistered',
-                    'confidence': float(confidence) if confidence else None,
-                    'person_id': None,
-                    'requires_registration': True,
-                    'box': detection_info.get('box'),
-                    'camera_detected': True,
-                    'person_detected': True
-                })
-                continue
+            if track.embedding is None:
+                track.name = 'Unknown'
+                track.person_id = None
+                track.confidence = None
+                track.requires_registration = tracker.should_prompt_registration(track)
+                if track.requires_registration:
+                    tracker.mark_prompted(track)
+            else:
+                if needs_embedding or track.name is None:
+                    recognized, name, confidence = recognizer.recognize(track.embedding)
+                    if recognized and name:
+                        track.name = name
+                        track.confidence = float(confidence)
+                        track.requires_registration = False
+                        track.unknown_since = None
+                        track.prompt_at = None
+                    else:
+                        track.name = 'Unregistered'
+                        track.confidence = float(confidence) if confidence else None
+                        if track.unknown_since is None:
+                            track.unknown_since = now
+                        track.requires_registration = tracker.should_prompt_registration(track)
+                        if track.requires_registration:
+                            tracker.mark_prompted(track)
 
-            # Get person details
-            person = database.get_person_by_name(name)
-            person_id = str(person['_id']) if person else None
+            person = None
+            person_id = None
+            if track.name and track.name not in ('Unknown', 'Unregistered'):
+                person = database.get_person_by_name(track.name)
+                person_id = str(person['_id']) if person else None
+                track.person_id = person_id
 
-            # Only update image/embedding if person was recognized successfully
-            if person_id:
-                logger.info("Person recognized! Updating their image and embedding...")
-                from opencv.config import UPDATE_THRESHOLD, DUPLICATE_THRESHOLD
+                if person_id and needs_embedding:
+                    # Only save the profile photo once (first registration).
+                    if not person or not person.get('image_path'):
+                        logger.info("Person recognized with no profile image. Saving first-time image.")
 
-                # Copy image to persistent storage
-                import shutil
-                images_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'meeting_data', 'images')
-                os.makedirs(images_dir, exist_ok=True)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                persistent_image_path = os.path.join(images_dir, f'person_{person_id}_{timestamp}.jpg')
-                shutil.copy(image_path, persistent_image_path)
+                        import shutil
+                        images_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'meeting_data', 'images')
+                        os.makedirs(images_dir, exist_ok=True)
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        persistent_image_path = os.path.join(images_dir, f'person_{person_id}_{timestamp}.jpg')
+                        shutil.copy(image_path, persistent_image_path)
 
-                # Update embedding and image if confidence is high enough
-                if confidence and UPDATE_THRESHOLD <= confidence < DUPLICATE_THRESHOLD:
-                    logger.info(f"High confidence ({confidence:.4f}). Updating embedding and image for {name}.")
-                    database.update_person_embedding_and_image(person_id, embedding, persistent_image_path)
-                    recognizer._cached_records = None
-                else:
-                    database.update_person_image(person_id, persistent_image_path)
+                        database.update_person_image(person_id, persistent_image_path)
+                        person = database.get_person_by_name(track.name)
 
-                person = database.get_person_by_name(name)
-
-            # Load the registered person's photo in base64
             person_image_base64 = None
             if person and person.get('image_path') and os.path.exists(person['image_path']):
                 with open(person['image_path'], 'rb') as img_file:
                     person_image_base64 = 'data:image/jpeg;base64,' + base64.b64encode(img_file.read()).decode('utf-8')
 
-            # Get last meeting for recognized person
             last_meeting = None
             if person_id:
-                meeting = database.get_last_meeting(person_id)
-                if meeting:
-                    last_meeting = {
-                        'timestamp': meeting['timestamp'].isoformat(),
-                        'summary': meeting['summary'],
-                        'transcript': meeting['transcript'][:200] + '...' if len(meeting['transcript']) > 200 else meeting['transcript']
-                    }
+                if track.last_meeting_at is None or (now - track.last_meeting_at) > 30:
+                    meeting = database.get_last_meeting(person_id)
+                    if meeting:
+                        track.last_meeting = {
+                            'timestamp': meeting['timestamp'].isoformat(),
+                            'summary': meeting['summary'],
+                            'transcript': meeting['transcript'][:200] + '...' if len(meeting['transcript']) > 200 else meeting['transcript']
+                        }
+                    else:
+                        track.last_meeting = None
+                    track.last_meeting_at = now
+
+                last_meeting = track.last_meeting
 
             results.append({
-                'name': name,
-                'confidence': float(confidence) if confidence else None,
+                'track_id': track.track_id,
+                'name': track.name,
+                'confidence': track.confidence,
                 'person_id': person_id,
-                'requires_registration': False,
-                'box': detection_info.get('box'),
+                'requires_registration': track.requires_registration,
+                'box': track.box,
                 'person_image': person_image_base64,
                 'last_meeting': last_meeting,
                 'camera_detected': True,
@@ -366,7 +388,10 @@ def camera_status():
     try:
         init_components()
 
-        ret, _ = camera.camera.read()
+        if camera.cap is None or not camera.cap.isOpened():
+            camera.open()
+
+        ret, _ = camera.read_frame()
 
         return jsonify({
             'available': ret,

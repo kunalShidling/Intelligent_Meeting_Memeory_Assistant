@@ -2,8 +2,8 @@
 Audio Transcription Module using OpenAI Whisper
 
 This module provides a production-ready solution for converting audio files to text
-using OpenAI's Whisper model. It supports multiple audio formats, language detection,
-translation, and timestamp extraction.
+using OpenAI's Whisper model with English-only, low-latency settings and chunked
+inference for faster response times.
 
 Author: Audio Transcription System
 Date: 2026
@@ -12,9 +12,14 @@ Date: 2026
 import os
 import json
 import warnings
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, Union, List
 from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import numpy as np
+import torch
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore")
@@ -40,7 +45,15 @@ class AudioTranscriber:
     SUPPORTED_FORMATS = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.wma', '.aac', '.mp4', '.webm'}
     AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large']
     
-    def __init__(self, model_name: str = 'base', device: str = 'cpu'):
+    def __init__(
+        self,
+        model_name: str = 'base',
+        device: str = 'cpu',
+        language: str = 'en',
+        task: str = 'transcribe',
+        chunk_seconds: int = 15,
+        max_workers: Optional[int] = None
+    ):
         """
         Initialize the AudioTranscriber with a specified Whisper model.
         
@@ -59,10 +72,21 @@ class AudioTranscriber:
             )
         
         self.model_name = model_name
-        self.device = device
+        self.device = self._resolve_device(device)
+        self.language = language or 'en'
+        self.task = 'transcribe' if task != 'transcribe' else task
+        self.chunk_seconds = max(5, int(chunk_seconds))
+        self.max_workers = max_workers
         self.model = None
-        print(f"Initializing Whisper model '{model_name}' on {device}...")
+        self.use_fp16 = self.device == 'cuda'
+        self.inference_lock = threading.Lock()
+        print(f"Initializing Whisper model '{model_name}' on {self.device}...")
         self._load_model()
+
+    def _resolve_device(self, device: str) -> str:
+        if device == 'auto':
+            return 'cuda' if torch.cuda.is_available() else 'cpu'
+        return device
     
     def _load_model(self) -> None:
         """Load the Whisper model into memory."""
@@ -146,27 +170,32 @@ class AudioTranscriber:
         # Validate inputs
         audio_path = self._validate_audio_file(file_path)
         
-        if task not in ['transcribe', 'translate']:
-            raise ValueError("Task must be either 'transcribe' or 'translate'")
+        if task != 'transcribe':
+            task = 'transcribe'
         
         if verbose:
             print(f"\nProcessing: {audio_path.name}")
             print(f"Task: {task}")
-            print(f"Language: {language if language else 'auto-detect'}")
+            print(f"Language: {language if language else 'en'}")
         
         try:
-            # Transcribe using Whisper
-            result = self.model.transcribe(
+            language = language or self.language or 'en'
+
+            if include_timestamps:
+                result = self._transcribe_full(
+                    str(audio_path),
+                    task=task,
+                    language=language,
+                    verbose=verbose
+                )
+                return self._format_with_timestamps(result)
+
+            return self._transcribe_chunked(
                 str(audio_path),
                 task=task,
                 language=language,
                 verbose=verbose
             )
-            
-            if include_timestamps:
-                return self._format_with_timestamps(result)
-            else:
-                return result['text'].strip()
         
         except Exception as e:
             raise RuntimeError(f"Transcription failed: {str(e)}")
@@ -217,15 +246,15 @@ class AudioTranscriber:
         # Validate inputs
         audio_path = self._validate_audio_file(file_path)
         
-        if task not in ['transcribe', 'translate']:
-            raise ValueError("Task must be either 'transcribe' or 'translate'")
+        if task != 'transcribe':
+            task = 'transcribe'
         
         if verbose:
             print(f"\nProcessing: {audio_path.name}")
         
         try:
-            # Transcribe using Whisper
-            result = self.model.transcribe(
+            language = language or self.language or 'en'
+            result = self._transcribe_full(
                 str(audio_path),
                 task=task,
                 language=language,
@@ -319,6 +348,99 @@ class AudioTranscriber:
         
         return str(output_path)
 
+    def _transcribe_full(
+        self,
+        file_path: str,
+        task: str,
+        language: str,
+        verbose: bool
+    ) -> Dict[str, Any]:
+        """
+        Full Whisper transcription (slower) with timestamps.
+        """
+        return self.model.transcribe(
+            file_path,
+            task='transcribe',
+            language=language,
+            verbose=verbose,
+            fp16=self.use_fp16,
+            temperature=0.0,
+            beam_size=1,
+            condition_on_previous_text=False
+        )
+
+    def _transcribe_chunked(
+        self,
+        file_path: str,
+        task: str,
+        language: str,
+        verbose: bool
+    ) -> str:
+        """
+        Chunked transcription for faster latency. English-only, no translate mode.
+        """
+        audio = whisper.load_audio(file_path)
+        chunk_samples = int(self.chunk_seconds * whisper.audio.SAMPLE_RATE)
+        if chunk_samples <= 0:
+            chunk_samples = int(15 * whisper.audio.SAMPLE_RATE)
+
+        chunks = [audio[i:i + chunk_samples] for i in range(0, len(audio), chunk_samples)]
+        if not chunks:
+            return ""
+
+        options = whisper.DecodingOptions(
+            language=language,
+            task='transcribe',
+            fp16=self.use_fp16,
+            temperature=0.0,
+            beam_size=1,
+            without_timestamps=True
+        )
+
+        max_workers = self._resolve_max_workers()
+        results: List[str] = ["" for _ in range(len(chunks))]
+
+        def run_chunk(idx: int, chunk_audio: np.ndarray) -> None:
+            text = self._decode_chunk(chunk_audio, options)
+            results[idx] = text
+
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(run_chunk, idx, chunk): idx
+                    for idx, chunk in enumerate(chunks)
+                }
+                for future in as_completed(futures):
+                    future.result()
+
+            return " ".join([text for text in results if text]).strip()
+        except Exception:
+            # Fall back to the stable full-file path if chunked decode fails.
+            full = self._transcribe_full(
+                file_path=file_path,
+                task=task,
+                language=language,
+                verbose=verbose
+            )
+            return full.get('text', '').strip()
+
+    def _decode_chunk(self, chunk_audio: np.ndarray, options: whisper.DecodingOptions) -> str:
+        chunk_audio = whisper.pad_or_trim(chunk_audio)
+        mel = whisper.log_mel_spectrogram(chunk_audio).to(self.model.device)
+        # Whisper decode is not thread-safe in some environments.
+        with self.inference_lock:
+            result = whisper.decode(self.model, mel, options)
+        return result.text.strip()
+
+    def _resolve_max_workers(self) -> int:
+        if self.max_workers is not None and self.max_workers > 0:
+            return self.max_workers
+        if self.device == 'cuda':
+            return 1
+        cpu_count = os.cpu_count() or 2
+        # Use a single worker on CPU to avoid concurrent model decode issues.
+        return 1
+
 
 # Convenience function for simple use cases
 def transcribe_audio(
@@ -346,7 +468,12 @@ def transcribe_audio(
         >>> print(text)
         This is the transcribed text from the audio file.
     """
-    transcriber = AudioTranscriber(model_name=model, device=device)
+    transcriber = AudioTranscriber(
+        model_name=model,
+        device=device,
+        language=language or 'en',
+        task='transcribe'
+    )
     return transcriber.transcribe_audio(
         file_path=file_path,
         task=task,

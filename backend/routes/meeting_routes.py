@@ -62,6 +62,10 @@ def start_meeting():
 
         logger.info(f"Starting meeting for {person_name} (duration: {duration}s)")
 
+        if not participant_group_key:
+            key_source = participant_ids or [person_id]
+            participant_group_key = '|'.join(sorted([str(pid) for pid in key_source if pid]))
+
         # Prepare directories
         audio_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'meeting_data', 'audio')
         os.makedirs(audio_dir, exist_ok=True)
@@ -94,7 +98,10 @@ def start_meeting():
             transcript=transcript,
             summary=summary,
             audio_path=audio_path,
-            image_path=image_path
+            image_path=image_path,
+            participant_ids=participant_ids or [person_id],
+            participant_names=participant_names or [person_name],
+            participant_group_key=participant_group_key
         )
 
         logger.info(f"Meeting completed successfully: {meeting_id}")
@@ -121,6 +128,9 @@ def create_meeting():
         data = request.json
         person_id = data.get('person_id')
         person_name = data.get('person_name')
+        participant_ids = data.get('participant_ids') or []
+        participant_names = data.get('participant_names') or []
+        participant_group_key = data.get('participant_group_key')
         transcript = data.get('transcript')
         summary = data.get('summary')
         audio_path = data.get('audio_path')
@@ -140,6 +150,10 @@ def create_meeting():
 
         if not person_name and participant_names:
             person_name = participant_names[0]
+
+        if not participant_group_key:
+            key_source = participant_ids or [person_id]
+            participant_group_key = '|'.join(sorted([str(pid) for pid in key_source if pid]))
 
         # Generate summary if not provided
         if not summary:
@@ -184,8 +198,8 @@ def create_meeting():
             summary=summary,
             audio_path=audio_path,
             image_path=image_path,
-            participant_ids=participant_ids,
-            participant_names=participant_names,
+            participant_ids=participant_ids or [person_id],
+            participant_names=participant_names or [person_name],
             participant_group_key=participant_group_key
         )
 
@@ -346,4 +360,37 @@ def search_meetings():
 
     except Exception as e:
         logger.error(f"Error searching meetings: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@meeting_bp.route('/related', methods=['POST'])
+def related_meetings():
+    """Return meetings ranked by participant overlap and recency."""
+    try:
+        init_components()
+
+        data = request.json or {}
+        participant_ids = data.get('participant_ids') or []
+        participant_names = data.get('participant_names') or []
+        limit = int(data.get('limit', 25))
+
+        meetings = database.get_relevant_meetings(
+            participant_ids=participant_ids,
+            participant_names=participant_names,
+            limit=limit
+        )
+
+        for meeting in meetings:
+            meeting['_id'] = str(meeting['_id'])
+            if meeting.get('person_id') is not None:
+                meeting['person_id'] = str(meeting['person_id'])
+            meeting['timestamp'] = meeting['timestamp'].isoformat()
+
+        return jsonify({
+            'success': True,
+            'meetings': meetings,
+            'total': len(meetings)
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting related meetings: {e}")
         return jsonify({'error': str(e)}), 500

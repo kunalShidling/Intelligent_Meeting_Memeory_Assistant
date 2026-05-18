@@ -40,6 +40,11 @@ export const meetingService = {
   searchMeetings: async (keyword) => {
     return await api.get('/meeting/search', { params: { q: keyword } });
   },
+
+  // Get relevant meetings for a participant set
+  getRelatedMeetings: async (payload) => {
+    return await api.post('/meeting/related', payload);
+  },
 };
 
 export default meetingService;

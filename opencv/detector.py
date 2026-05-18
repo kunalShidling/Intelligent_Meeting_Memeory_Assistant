@@ -25,8 +25,16 @@ class FaceDetector:
         import threading
         self.inference_lock = threading.Lock()
         try:
-            # MTCNN 1.0.0+ has simplified API
-            self.detector = MTCNN()
+            # Prefer explicit settings when supported by the installed mtcnn version.
+            try:
+                self.detector = MTCNN(
+                    min_face_size=config.MTCNN_MIN_FACE_SIZE,
+                    steps_threshold=config.MTCNN_THRESHOLDS
+                )
+            except TypeError:
+                # Older mtcnn versions do not accept these keyword args.
+                self.detector = MTCNN()
+
             logger.info("MTCNN face detector initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize MTCNN: {e}")

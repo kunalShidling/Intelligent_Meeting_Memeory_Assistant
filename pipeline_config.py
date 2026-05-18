@@ -13,9 +13,13 @@ AUDIO_DIR = MEETING_DATA_DIR / "audio"
 TRANSCRIPTS_DIR = MEETING_DATA_DIR / "transcripts"
 
 # ==================== Audio Settings ====================
-# Whisper model for transcription
-WHISPER_MODEL = 'base'  # Options: tiny, base, small, medium, large
-WHISPER_DEVICE = 'cpu'  # Use 'cuda' if GPU available
+# Whisper model for transcription (smaller models reduce latency)
+WHISPER_MODEL = 'tiny'  # Options: tiny, base, small, medium, large
+WHISPER_DEVICE = 'auto'  # Use 'auto' to select GPU when available
+WHISPER_LANGUAGE = 'en'  # Force English-only transcription
+WHISPER_TASK = 'transcribe'  # Translate mode disabled
+WHISPER_CHUNK_SECONDS = 15  # Chunk size for faster streaming
+WHISPER_MAX_WORKERS = 2  # Parallel chunk workers on CPU
 
 # Audio recording settings
 SAMPLE_RATE = 16000  # Hz

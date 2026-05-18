@@ -16,6 +16,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from audio_to_text.mic_transcriber import MicrophoneTranscriber
 from audio_to_text.audio_transcriber import AudioTranscriber
 from audio_to_text.text_summarizer import TextSummarizer
+from backend.services.audio_jobs import AudioJobManager
+from pipeline_config import (
+    WHISPER_MODEL,
+    WHISPER_DEVICE,
+    WHISPER_LANGUAGE,
+    WHISPER_CHUNK_SECONDS,
+    WHISPER_MAX_WORKERS,
+    GROQ_MODEL
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +37,7 @@ MINIMUM_AUDIO_BYTES = 1024
 mic_transcriber = None
 audio_transcriber = None
 text_summarizer = None
+job_manager = None
 recording_data = {}  # Store recording sessions
 
 import threading
@@ -35,23 +45,31 @@ init_lock = threading.Lock()
 
 def init_components():
     """Initialize audio processing components."""
-    global mic_transcriber, audio_transcriber, text_summarizer
+    global mic_transcriber, audio_transcriber, text_summarizer, job_manager
 
-    if mic_transcriber is not None and audio_transcriber is not None and text_summarizer is not None:
+    if mic_transcriber is not None and audio_transcriber is not None and text_summarizer is not None and job_manager is not None:
         return
 
     with init_lock:
-        if mic_transcriber is not None and audio_transcriber is not None and text_summarizer is not None:
+        if mic_transcriber is not None and audio_transcriber is not None and text_summarizer is not None and job_manager is not None:
             return
             
         logger.info("Initializing audio components...")
-        mic_t = MicrophoneTranscriber(model_name='tiny', device='cpu')
-        audio_t = AudioTranscriber(model_name='tiny', device='cpu')
-        text_s = TextSummarizer(model='llama-3.1-8b-instant')
+        mic_t = MicrophoneTranscriber(model_name=WHISPER_MODEL, device=WHISPER_DEVICE)
+        audio_t = AudioTranscriber(
+            model_name=WHISPER_MODEL,
+            device=WHISPER_DEVICE,
+            language=WHISPER_LANGUAGE,
+            task='transcribe',
+            chunk_seconds=WHISPER_CHUNK_SECONDS,
+            max_workers=WHISPER_MAX_WORKERS
+        )
+        text_s = TextSummarizer(model=GROQ_MODEL)
         
         mic_transcriber = mic_t
         audio_transcriber = audio_t
         text_summarizer = text_s
+        job_manager = AudioJobManager(audio_transcriber, text_summarizer)
         logger.info("Audio components initialized successfully")
 
 @audio_bp.route('/record', methods=['POST'])
@@ -113,6 +131,7 @@ def transcribe_audio():
         text = audio_transcriber.transcribe_audio(
             file_path=audio_path,
             task='transcribe',
+            language='en',
             include_timestamps=False,
             verbose=True
         )
@@ -232,30 +251,70 @@ def process_audio_file():
                 'file_size': file_size
             }), 400
 
-        # Transcribe
-        text = audio_transcriber.transcribe_audio(
-            file_path=audio_path,
-            task='transcribe',
-            include_timestamps=False,
-            verbose=True
-        )
+        sync_mode = request.args.get('sync', 'false').lower() == 'true'
+        if sync_mode:
+            text = audio_transcriber.transcribe_audio(
+                file_path=audio_path,
+                task='transcribe',
+                language='en',
+                include_timestamps=False,
+                verbose=True
+            )
 
-        # Summarize
-        summary = text_summarizer.summarize_to_bullets(
-            text=text,
-            max_bullets=10,
-            verbose=True
-        )
+            summary = text_summarizer.summarize_to_bullets(
+                text=text,
+                max_bullets=10,
+                verbose=True
+            )
 
+            return jsonify({
+                'success': True,
+                'status': 'completed',
+                'transcript': text,
+                'summary': summary,
+                'audio_path': audio_path
+            })
+
+        job_id = job_manager.submit(audio_path, max_bullets=10)
         return jsonify({
             'success': True,
-            'transcript': text,
-            'summary': summary,
+            'status': 'queued',
+            'job_id': job_id,
             'audio_path': audio_path
         })
 
     except Exception as e:
         logger.error(f"Error processing audio file: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@audio_bp.route('/job/<job_id>', methods=['GET'])
+def get_job_status(job_id):
+    """Check status of an async audio processing job."""
+    try:
+        init_components()
+
+        job = job_manager.get(job_id)
+        if not job:
+            return jsonify({'error': 'Job not found'}), 404
+
+        response = {
+            'success': True,
+            'job_id': job_id,
+            'status': job.get('status'),
+            'audio_path': job.get('audio_path'),
+            'error': job.get('error')
+        }
+
+        if job.get('status') == 'completed':
+            response.update({
+                'transcript': job.get('transcript'),
+                'summary': job.get('summary')
+            })
+
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"Error fetching job status: {e}")
         return jsonify({'error': str(e)}), 500
 
 @audio_bp.route('/devices', methods=['GET'])

@@ -87,6 +87,8 @@ class FaceDatabase:
             self.meetings_collection = self.db['meetings']
             self.meetings_collection.create_index([("person_id", ASCENDING)])
             self.meetings_collection.create_index([("participant_ids", ASCENDING)])
+            self.meetings_collection.create_index([("participant_names", ASCENDING)])
+            self.meetings_collection.create_index([("person_name", ASCENDING)])
             self.meetings_collection.create_index([("timestamp", ASCENDING)])
             
             logger.debug("Database indexes created")
@@ -500,6 +502,86 @@ class FaceDatabase:
             
         except Exception as e:
             logger.error(f"Error retrieving meetings: {e}")
+            return []
+
+    def get_relevant_meetings(
+        self,
+        participant_ids: Optional[List[str]] = None,
+        participant_names: Optional[List[str]] = None,
+        limit: int = 25
+    ) -> List[Dict]:
+        """
+        Get meetings ranked by participant overlap and recency.
+        """
+        try:
+            if not self.is_connected():
+                logger.error("Database not connected")
+                return []
+
+            participant_ids = [str(pid) for pid in (participant_ids or []) if pid]
+            participant_names = [str(name) for name in (participant_names or []) if name]
+
+            if not participant_ids and not participant_names:
+                return []
+
+            or_clauses = []
+            if participant_ids:
+                or_clauses.append({'person_id': {'$in': participant_ids}})
+                or_clauses.append({'participant_ids': {'$in': participant_ids}})
+            if participant_names:
+                or_clauses.append({'person_name': {'$in': participant_names}})
+                or_clauses.append({'participant_names': {'$in': participant_names}})
+
+            query = {'$or': or_clauses} if or_clauses else {}
+
+            raw_meetings = list(
+                self.meetings_collection.find(query)
+                .sort('timestamp', -1)
+                .limit(max(limit * 5, limit))
+            )
+
+            active_ids = set([pid for pid in participant_ids])
+            active_names = set([name.lower() for name in participant_names])
+
+            def score_meeting(meeting: Dict) -> int:
+                meeting_ids = set([str(pid) for pid in meeting.get('participant_ids', []) if pid])
+                if meeting.get('person_id'):
+                    meeting_ids.add(str(meeting['person_id']))
+
+                meeting_names = set([str(name).lower() for name in meeting.get('participant_names', []) if name])
+                if meeting.get('person_name'):
+                    meeting_names.add(str(meeting['person_name']).lower())
+
+                exact_match = False
+                if active_ids:
+                    exact_match = meeting_ids == active_ids
+                elif active_names:
+                    exact_match = meeting_names == active_names
+
+                overlap_ids = len(meeting_ids.intersection(active_ids)) if active_ids else 0
+                overlap_names = len(meeting_names.intersection(active_names)) if active_names else 0
+
+                score = 0
+                if exact_match:
+                    score += 100
+                score += overlap_ids * 10
+                score += overlap_names * 5
+                return score
+
+            ranked = []
+            for meeting in raw_meetings:
+                meeting['_score'] = score_meeting(meeting)
+                ranked.append(meeting)
+
+            ranked.sort(
+                key=lambda m: (m.get('_score', 0), m.get('timestamp')),
+                reverse=True
+            )
+
+            return ranked[:limit]
+
+        except Exception as e:
+            logger.error(f"Error retrieving relevant meetings: {e}")
             return []
     
     def get_person_by_name(self, name: str) -> Optional[Dict]:

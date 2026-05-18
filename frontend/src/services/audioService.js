@@ -29,6 +29,11 @@ export const audioService = {
     });
   },
 
+  // Check async audio job status
+  getJobStatus: async (jobId) => {
+    return await api.get(`/audio/job/${jobId}`);
+  },
+
   // List audio devices
   getAudioDevices: async () => {
     return await api.get('/audio/devices');

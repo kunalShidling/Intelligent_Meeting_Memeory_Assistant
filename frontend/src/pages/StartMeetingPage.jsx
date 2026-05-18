@@ -327,10 +327,6 @@ export default function StartMeetingPage() {
       }
       updateFacePresence(faces);
 
-      if (faces.length > 0 && faces.every(face => !face.unknown)) {
-        setRecognitionPaused(true);
-      }
-
       const unknownFace = faces.find(face => face.requires_registration || face.unknown);
       if (unknownFace && pipelineStatusRef.current === 'waiting' && !showRegisterModalRef.current) {
         setPendingRegistration({
@@ -460,6 +456,9 @@ export default function StartMeetingPage() {
 
       const processResponse = await audioService.processAudioFile(audioBlob);
       if (!processResponse.success) throw new Error(processResponse.error || 'Audio process failed');
+      if (!processResponse.job_id) throw new Error('Audio processing job missing');
+
+      const jobResult = await waitForAudioJob(processResponse.job_id);
 
       const participantIds = activeParticipants.map(p => p.person_id).filter(Boolean);
       const participantNames = activeParticipants.map(p => p.name).filter(Boolean);
@@ -471,16 +470,16 @@ export default function StartMeetingPage() {
         participant_ids: participantIds,
         participant_names: participantNames,
         participant_group_key: participantGroupKey,
-        transcript: processResponse.transcript,
-        summary: processResponse.summary,
-        audio_path: processResponse.audio_path,
+        transcript: jobResult.transcript,
+        summary: jobResult.summary,
+        audio_path: jobResult.audio_path || processResponse.audio_path,
         image_path: capturedImage,
       };
 
       setReviewData({
-        transcript: processResponse.transcript,
-        summary: processResponse.summary,
-        audio_path: processResponse.audio_path,
+        transcript: jobResult.transcript,
+        summary: jobResult.summary,
+        audio_path: jobResult.audio_path || processResponse.audio_path,
       });
 
       setPendingMeeting({
@@ -552,34 +551,51 @@ export default function StartMeetingPage() {
     }
 
     try {
-      const responses = await Promise.all(
-        participantIds.map(id => meetingService.getPersonMeetings(id).catch(() => ({ meetings: [] })))
-      );
-      const combined = [];
-      const seen = new Set();
-      responses.forEach((response) => {
-        const meetings = unwrapMeetings(response);
-        meetings.forEach((meeting) => {
-          if (!meeting || !meeting._id || seen.has(meeting._id)) return;
-          seen.add(meeting._id);
-          combined.push(meeting);
-        });
+      const response = await meetingService.getRelatedMeetings({
+        participant_ids: participantIds,
+        participant_names: participantNames,
+        limit: 25,
+      });
+      const meetings = unwrapMeetings(response);
+
+      if (!meetings.length) {
+        setRelatedMeetings([]);
+        return;
+      }
+
+      const scored = meetings.map(meeting => ({
+        ...meeting,
+        _score: meeting._score ?? computeMeetingScore(meeting, participantIds, participantNames)
+      }));
+
+      scored.sort((a, b) => {
+        if (b._score !== a._score) return b._score - a._score;
+        return new Date(b.timestamp) - new Date(a.timestamp);
       });
 
-      const ranked = combined
-        .map(meeting => ({
-          ...meeting,
-          _score: computeMeetingScore(meeting, participantIds, participantNames)
-        }))
-        .sort((a, b) => {
-          if (b._score !== a._score) return b._score - a._score;
-          return new Date(b.timestamp) - new Date(a.timestamp);
-        });
-
-      setRelatedMeetings(ranked);
+      setRelatedMeetings(scored);
     } catch (err) {
       console.error('Failed to load related meetings', err);
     }
+  };
+
+  const waitForAudioJob = async (jobId) => {
+    const timeoutMs = 120000;
+    const intervalMs = 1500;
+    const start = Date.now();
+
+    while (Date.now() - start < timeoutMs) {
+      const status = await audioService.getJobStatus(jobId);
+      if (status?.status === 'completed') {
+        return status;
+      }
+      if (status?.status === 'failed') {
+        throw new Error(status?.error || 'Audio processing failed');
+      }
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+    }
+
+    throw new Error('Audio processing timed out');
   };
 
   const handleAutoRegister = async () => {

@@ -37,6 +37,12 @@ DUPLICATE_THRESHOLD = 0.98  # If similarity >= this, considered duplicate
 UPDATE_THRESHOLD = 0.75  # Update profile if similarity is >= this (but < DUPLICATE_THRESHOLD)
 UPDATE_COOLDOWN_HOURS = 24  # Wait 24 hours before updating same person again
 
+# ==================== Tracking Settings ====================
+TRACK_IOU_THRESHOLD = 0.3  # Minimum IoU to keep a face track
+TRACK_MAX_AGE_SEC = 2.5  # Drop tracks not seen within this window
+TRACK_EMBED_REFRESH_SEC = 1.5  # Refresh embeddings for active tracks
+UNKNOWN_PROMPT_COOLDOWN_SEC = 8  # Delay between unknown registration prompts
+
 # ==================== Database Settings ====================
 # MongoDB connection - Choose one:
 

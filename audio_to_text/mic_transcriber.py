@@ -2,7 +2,7 @@
 Real-time Microphone Audio Transcription Module
 
 This module captures audio from your microphone and transcribes it to text
-using OpenAI Whisper. It supports both transcription and translation to English.
+using OpenAI Whisper. Transcription is fixed to English for low-latency output.
 
 Author: Audio Transcription System
 Date: 2026
@@ -190,7 +190,7 @@ class MicrophoneTranscriber:
         duration: Optional[int] = None,
         device_id: Optional[int] = None,
         task: Literal['transcribe', 'translate'] = 'transcribe',
-        language: Optional[str] = None,
+        language: Optional[str] = 'en',
         save_audio: bool = False,
         output_audio_path: Optional[str] = None,
         verbose: bool = True
@@ -201,8 +201,8 @@ class MicrophoneTranscriber:
         Args:
             duration (int, optional): Recording duration in seconds. None for manual stop.
             device_id (int, optional): Microphone device ID. None for default.
-            task (str): Either 'transcribe' (same language) or 'translate' (to English)
-            language (str, optional): Language code. Auto-detected if None.
+            task (str): Transcribe mode only (translate disabled).
+            language (str, optional): Language code (defaults to 'en').
             save_audio (bool): Whether to save the recorded audio file
             output_audio_path (str, optional): Path to save audio. Auto-generated if None.
             verbose (bool): Show detailed progress
@@ -231,8 +231,8 @@ class MicrophoneTranscriber:
             
             text = self.transcriber.transcribe_audio(
                 file_path=temp_path,
-                task=task,
-                language=language,
+                task='transcribe',
+                language=language or 'en',
                 include_timestamps=False,
                 verbose=verbose
             )
@@ -266,20 +266,19 @@ class MicrophoneTranscriber:
         
         Args:
             duration (int): Recording duration in seconds (default: 10)
-            translate_to_english (bool): Translate to English (default: True)
+            translate_to_english (bool): Ignored; English transcription is always used
         
         Returns:
             str: Transcribed text
         """
-        task = 'translate' if translate_to_english else 'transcribe'
-        
         print(f"\n🎤 Quick Transcription Mode")
         print(f"Duration: {duration} seconds")
-        print(f"Mode: {'Translate to English' if translate_to_english else 'Transcribe'}")
-        
+        print("Mode: Transcribe (English only)")
+
         return self.transcribe_from_mic(
             duration=duration,
-            task=task,
+            task='transcribe',
+            language='en',
             verbose=True
         )
 
@@ -311,11 +310,11 @@ def record_and_transcribe(
         This is the transcribed text from your microphone.
     """
     mic_transcriber = MicrophoneTranscriber(model_name=model, device='cpu')
-    task = 'translate' if translate_to_english else 'transcribe'
     
     return mic_transcriber.transcribe_from_mic(
         duration=duration,
-        task=task,
+        task='transcribe',
+        language='en',
         save_audio=save_audio,
         verbose=True
     )
