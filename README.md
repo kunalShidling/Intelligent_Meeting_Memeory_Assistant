@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project integrates **face recognition** with **audio transcription** and **conversation summarization** to create an intelligent meeting assistant that:
+This project integrate **face recognition** with **audio transcription** and **conversation summarization** to create an intelligent meeting assistant that:
 
 1. **Recognizes people** using camera and facial recognition
 2. **Displays meeting history** for returning visitors
@@ -485,5 +485,6 @@ For issues or questions:
 - [ ] Mobile app integration
 #   m i n i p r o j e c t 
  
- #   m i n i - P r - 2  
+ #   m i n i - P r - 2 
+ 
  
