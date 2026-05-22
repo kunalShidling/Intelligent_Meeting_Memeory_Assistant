@@ -9,7 +9,8 @@ Date: 2026
 """
 
 import os
-from typing import Optional, List
+import re
+from typing import Optional, List, Tuple
 from pathlib import Path
 from groq import Groq
 from dotenv import load_dotenv
@@ -35,6 +36,12 @@ class TextSummarizer:
         'mixtral-8x7b-32768',
         'gemma2-9b-it'
     ]
+
+    SUMMARY_SECTION_TITLE = "Meeting Summary"
+    ACTION_SECTION_TITLE = "Action Items"
+    DEFAULT_SUMMARY_BULLETS = 5
+    DEFAULT_ACTION_BULLETS = 5
+    MAX_BULLET_CHARS = 140
     
     def __init__(self, api_key: Optional[str] = None, model: str = 'llama-3.3-70b-versatile'):
         """
@@ -93,14 +100,16 @@ class TextSummarizer:
         # Construct the prompt
         focus_instruction = f" Focus on: {focus}." if focus else ""
         
-        prompt = f"""Analyze the following conversation/text and create a clear, concise summary in bullet points.
+        prompt = f"""Analyze the following conversation/text and create a short, scannable summary in bullet points.
 
 Requirements:
 - Create up to {max_bullets} bullet points
-- Each bullet should be clear and self-contained
-- Focus on key points, main topics, and important information
-- Use professional, easy-to-understand language
-- Start each bullet with a bullet point symbol (•){focus_instruction}
+    - Each bullet should be clear, self-contained, and short (<= {self.MAX_BULLET_CHARS} characters)
+    - Focus on key decisions, action items, and important discussion topics
+    - Remove filler words and repeated content
+    - Ignore small talk or tangents
+    - Use professional, easy-to-understand language
+    - Start each bullet with a bullet point symbol (•){focus_instruction}
 
 Text to summarize:
 {text}
@@ -116,7 +125,7 @@ Provide ONLY the bullet points, no additional commentary."""
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are an expert at analyzing conversations and creating clear, concise summaries in bullet point format. You extract the most important information and present it in an easy-to-read manner."
+                        "content": "You are an expert at distilling conversations into short, actionable bullet points. Focus on decisions, action items, and key topics only."
                     },
                     {
                         "role": "user",
@@ -125,12 +134,17 @@ Provide ONLY the bullet points, no additional commentary."""
                 ],
                 model=self.model,
                 temperature=0.3,  # Lower temperature for more focused summaries
-                max_tokens=1000,
+                max_tokens=700,
                 top_p=1,
                 stream=False
             )
             
             summary = chat_completion.choices[0].message.content.strip()
+            bullets = self._extract_bullets(summary)
+            if not bullets:
+                bullets = self._fallback_bullets(summary, max_bullets)
+            bullets = self._compress_bullets(bullets, max_bullets, self.MAX_BULLET_CHARS)
+            summary = "\n".join([f"• {bullet}" for bullet in bullets])
             
             if verbose:
                 print(f"Summary generated successfully ({len(summary)} characters)")
@@ -139,6 +153,175 @@ Provide ONLY the bullet points, no additional commentary."""
         
         except Exception as e:
             raise Exception(f"Failed to generate summary: {str(e)}")
+
+    def summarize_meeting(
+        self,
+        text: str,
+        max_summary_bullets: int = DEFAULT_SUMMARY_BULLETS,
+        max_action_items: int = DEFAULT_ACTION_BULLETS,
+        verbose: bool = False
+    ) -> str:
+        """
+        Create a structured, concise meeting summary with action items.
+
+        Args:
+            text (str): The text to summarize
+            max_summary_bullets (int): Maximum summary bullets
+            max_action_items (int): Maximum action items
+            verbose (bool): Print progress information
+
+        Returns:
+            str: Meeting Summary + Action Items sections
+        """
+        if not text or not text.strip():
+            raise ValueError("Text cannot be empty")
+
+        if verbose:
+            print(f"Summarizing meeting text ({len(text)} characters)...")
+
+        prompt = f"""Summarize the following meeting transcript.
+
+Output format (exactly):
+{self.SUMMARY_SECTION_TITLE}:
+• bullet 1
+• bullet 2
+
+{self.ACTION_SECTION_TITLE}:
+• Name → task (if owner known)
+
+Rules:
+- Keep it short and scannable
+- Use up to {max_summary_bullets} bullets in {self.SUMMARY_SECTION_TITLE}
+- Use up to {max_action_items} bullets in {self.ACTION_SECTION_TITLE}
+- Ignore small talk and filler
+- Avoid repetition
+- Each bullet <= {self.MAX_BULLET_CHARS} characters
+- If there are no action items, write "• None" under {self.ACTION_SECTION_TITLE}
+
+Transcript:
+"""
+
+        try:
+            chat_completion = self.client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You create short, professional meeting summaries with clear action items."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"{prompt}\n{text}"
+                    }
+                ],
+                model=self.model,
+                temperature=0.2,
+                max_tokens=700,
+                top_p=1,
+                stream=False
+            )
+
+            raw_summary = chat_completion.choices[0].message.content.strip()
+            summary_bullets, action_bullets = self._split_sections(raw_summary)
+
+            if not summary_bullets:
+                summary_bullets = self._fallback_bullets(raw_summary, max_summary_bullets)
+
+            summary_bullets = self._compress_bullets(
+                summary_bullets,
+                max_summary_bullets,
+                self.MAX_BULLET_CHARS
+            )
+            action_bullets = self._compress_bullets(
+                action_bullets,
+                max_action_items,
+                self.MAX_BULLET_CHARS
+            )
+
+            return self._format_sections(summary_bullets, action_bullets)
+
+        except Exception as e:
+            raise Exception(f"Failed to generate meeting summary: {str(e)}")
+
+    def _extract_bullets(self, text: str) -> List[str]:
+        bullets = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if re.match(r"^[\-•*]\s+", line):
+                bullets.append(line)
+        return bullets
+
+    def _fallback_bullets(self, text: str, max_bullets: int) -> List[str]:
+        sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+        bullets = [s.strip() for s in sentences if s.strip()]
+        return bullets[:max_bullets]
+
+    def _clean_bullet(self, bullet: str) -> str:
+        bullet = re.sub(r"^[\-•*]\s+", "", bullet).strip()
+        bullet = re.sub(r"\s+", " ", bullet)
+        return bullet.strip(" .;:")
+
+    def _truncate_bullet(self, bullet: str, max_chars: int) -> str:
+        if len(bullet) <= max_chars:
+            return bullet
+        truncated = bullet[:max_chars].rsplit(" ", 1)[0]
+        return truncated + "..."
+
+    def _compress_bullets(self, bullets: List[str], max_bullets: int, max_chars: int) -> List[str]:
+        cleaned = []
+        seen = set()
+        for bullet in bullets:
+            text = self._clean_bullet(bullet)
+            if not text:
+                continue
+            key = re.sub(r"[^a-z0-9]+", "", text.lower())
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(self._truncate_bullet(text, max_chars))
+            if len(cleaned) >= max_bullets:
+                break
+        return cleaned
+
+    def _split_sections(self, text: str) -> Tuple[List[str], List[str]]:
+        summary_bullets = []
+        action_bullets = []
+        current = None
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            lower = stripped.lower()
+            if lower.startswith(self.SUMMARY_SECTION_TITLE.lower()):
+                current = "summary"
+                continue
+            if lower.startswith(self.ACTION_SECTION_TITLE.lower()):
+                current = "action"
+                continue
+            if re.match(r"^[\-•*]\s+", stripped):
+                if current == "action":
+                    action_bullets.append(stripped)
+                else:
+                    summary_bullets.append(stripped)
+
+        return summary_bullets, action_bullets
+
+    def _format_sections(self, summary_bullets: List[str], action_bullets: List[str]) -> str:
+        lines = [f"{self.SUMMARY_SECTION_TITLE}:"]
+        for bullet in summary_bullets:
+            lines.append(f"• {bullet}")
+
+        lines.append("")
+        lines.append(f"{self.ACTION_SECTION_TITLE}:")
+        if action_bullets:
+            for bullet in action_bullets:
+                lines.append(f"• {bullet}")
+        else:
+            lines.append("• None")
+
+        return "\n".join(lines).strip()
     
     def summarize_with_structure(
         self,

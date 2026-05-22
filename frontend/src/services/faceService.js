@@ -30,6 +30,11 @@ export const faceService = {
   getCameraStatus: async () => {
     return await api.get('/face/camera/status');
   },
+
+  // Refresh face detection pipeline
+  refreshDetection: async () => {
+    return await api.post('/face/refresh');
+  },
 };
 
 export default faceService;

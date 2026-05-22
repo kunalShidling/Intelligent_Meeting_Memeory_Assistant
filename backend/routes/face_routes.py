@@ -68,6 +68,19 @@ def init_components():
             camera = None
             raise
 
+def _encode_face_image(face_image):
+    if face_image is None:
+        return None
+    try:
+        import cv2
+        success, buffer = cv2.imencode('.jpg', face_image)
+        if not success:
+            return None
+        return 'data:image/jpeg;base64,' + base64.b64encode(buffer).decode('utf-8')
+    except Exception as e:
+        logger.debug(f"Failed to encode face image: {e}")
+        return None
+
 @face_bp.route('/capture', methods=['POST'])
 def capture_face():
     """Capture face from camera."""
@@ -281,6 +294,7 @@ def recognize_face():
                 'person_id': person_id,
                 'requires_registration': track.requires_registration,
                 'box': track.box,
+                'face_image': _encode_face_image(track.face_image),
                 'person_image': person_image_base64,
                 'last_meeting': last_meeting,
                 'camera_detected': True,
@@ -371,6 +385,11 @@ def register_person():
         # Update person image path
         database.update_person_image(person_id, new_image_path)
 
+        if recognizer:
+            recognizer.invalidate_cache()
+        if tracker:
+            tracker.reset()
+
         return jsonify({
             'success': True,
             'name': name,
@@ -402,5 +421,32 @@ def camera_status():
         return jsonify({
             'available': False,
             'status': 'error',
+            'error': str(e)
+        }), 500
+
+@face_bp.route('/refresh', methods=['POST'])
+def refresh_detection():
+    """Refresh face detection pipeline without restarting the app."""
+    try:
+        init_components()
+
+        if tracker:
+            tracker.reset()
+        if recognizer:
+            recognizer.invalidate_cache()
+        if camera:
+            camera.last_frame_hash = None
+            if camera.cap is None or not camera.cap.isOpened():
+                camera.open()
+
+        return jsonify({
+            'success': True,
+            'message': 'Face detection refreshed'
+        })
+
+    except Exception as e:
+        logger.error(f"Error refreshing face detection: {e}")
+        return jsonify({
+            'success': False,
             'error': str(e)
         }), 500

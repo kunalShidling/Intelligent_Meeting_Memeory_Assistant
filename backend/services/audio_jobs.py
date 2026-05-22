@@ -22,7 +22,7 @@ class AudioJobManager:
         self._worker = threading.Thread(target=self._run, daemon=True)
         self._worker.start()
 
-    def submit(self, audio_path: str, max_bullets: int = 10) -> str:
+    def submit(self, audio_path: str, max_bullets: int = 5) -> str:
         job_id = str(uuid.uuid4())
         with self._lock:
             self.jobs[job_id] = {
@@ -62,9 +62,9 @@ class AudioJobManager:
                     include_timestamps=False,
                     verbose=False
                 )
-                summary = self.summarizer.summarize_to_bullets(
+                summary = self.summarizer.summarize_meeting(
                     text=transcript,
-                    max_bullets=max_bullets,
+                    max_summary_bullets=max_bullets,
                     verbose=False
                 )
 

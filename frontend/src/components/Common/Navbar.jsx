@@ -9,60 +9,62 @@ export default function Navbar() {
   };
 
   return (
-    <nav className="bg-white shadow-md">
-      <div className="container mx-auto px-4">
-        <div className="flex items-center justify-between h-16">
-          {/* Logo */}
-          <Link to="/" className="flex items-center space-x-2">
-            <Video className="w-8 h-8 text-blue-600" />
-            <span className="text-xl font-bold text-gray-900">Meeting Assistant</span>
+    <nav className="sticky top-0 z-40 border-b border-amber-100/70 bg-[#f6f3ee]/85 backdrop-blur">
+      <div className="mx-auto w-full max-w-6xl px-6">
+        <div className="flex flex-wrap items-center justify-between gap-4 py-4">
+          <Link to="/" className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-teal-500 to-emerald-400 text-white shadow-sm">
+              <Video className="h-5 w-5" />
+            </span>
+            <div className="leading-tight">
+              <span className="text-[0.6rem] uppercase tracking-[0.35em] text-slate-500">Meeting</span>
+              <span className="block text-lg font-semibold text-slate-900">Assistant</span>
+            </div>
           </Link>
 
-          {/* Navigation Links */}
-          <div className="flex items-center space-x-1">
+          <div className="flex flex-wrap items-center gap-2 rounded-full border border-amber-100 bg-white/70 px-2 py-1 shadow-sm">
             <Link
               to="/"
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
+              className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition ${
                 isActive('/')
-                  ? 'bg-blue-50 text-blue-600'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                  ? 'bg-slate-900 text-white shadow'
+                  : 'text-slate-600 hover:bg-white hover:text-slate-900'
               }`}
             >
-              <Home className="w-5 h-5" />
-              <span className="font-medium">Home</span>
+              <Home className="h-4 w-4" />
+              <span>Home</span>
             </Link>
 
             <Link
               to="/people"
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
+              className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition ${
                 isActive('/people')
-                  ? 'bg-blue-50 text-blue-600'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                  ? 'bg-slate-900 text-white shadow'
+                  : 'text-slate-600 hover:bg-white hover:text-slate-900'
               }`}
             >
-              <Users className="w-5 h-5" />
-              <span className="font-medium">People</span>
+              <Users className="h-4 w-4" />
+              <span>People</span>
             </Link>
 
             <Link
               to="/settings"
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
+              className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition ${
                 isActive('/settings')
-                  ? 'bg-blue-50 text-blue-600'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                  ? 'bg-slate-900 text-white shadow'
+                  : 'text-slate-600 hover:bg-white hover:text-slate-900'
               }`}
             >
-              <Settings className="w-5 h-5" />
-              <span className="font-medium">Settings</span>
+              <Settings className="h-4 w-4" />
+              <span>Settings</span>
             </Link>
           </div>
 
-          {/* Start Meeting Button */}
           <Link
             to="/start-meeting"
-            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
+            className="flex items-center gap-2 rounded-full bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-slate-900/20 transition hover:-translate-y-0.5 hover:bg-slate-800"
           >
-            <Video className="w-5 h-5" />
+            <Video className="h-4 w-4" />
             <span>Start Meeting</span>
           </Link>
         </div>

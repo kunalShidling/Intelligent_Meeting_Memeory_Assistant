@@ -92,6 +92,9 @@ class FaceTracker:
     def mark_prompted(self, track: FaceTrack) -> None:
         track.prompt_at = time.time()
 
+    def reset(self) -> None:
+        self._tracks.clear()
+
     def _find_best_track(self, box: Tuple[int, int, int, int], used_tracks: set) -> Optional[str]:
         best_iou = 0.0
         best_id = None

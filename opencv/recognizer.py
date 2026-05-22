@@ -40,6 +40,10 @@ class FaceRecognizer:
             self._cache_timestamp = current_time
             
         return self._cached_records
+
+    def invalidate_cache(self) -> None:
+        self._cached_records = None
+        self._cache_timestamp = 0
     
     def compute_cosine_similarity(self, emb1: np.ndarray, emb2: np.ndarray) -> float:
         """

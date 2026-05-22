@@ -46,24 +46,24 @@ export default function HomePage() {
   }
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Home</h1>
-          <p className="mt-1 text-gray-600">Welcome to Meeting Assistant</p>
+    <div className="space-y-10">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-[0.35em] text-slate-500">Dashboard</p>
+          <h1 className="text-4xl font-semibold text-slate-900">Home</h1>
+          <p className="text-slate-600">Welcome to Meeting Assistant</p>
         </div>
         <Link
           to="/start-meeting"
-          className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium transition-colors flex items-center space-x-2"
+          className="group inline-flex items-center gap-2 rounded-full bg-slate-900 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-slate-900/20 transition hover:-translate-y-0.5 hover:bg-slate-800"
         >
-          <Video className="w-5 h-5" />
+          <Video className="w-4 h-4" />
           <span>Start New Meeting</span>
         </Link>
       </div>
 
       {/* Statistics Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
         <StatsCard
           title="Total People"
           value={stats?.total_people || 0}
@@ -91,18 +91,18 @@ export default function HomePage() {
       </div>
 
       {/* Recent Meetings */}
-      <div className="bg-white rounded-lg shadow-md">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <h2 className="text-xl font-semibold text-gray-900">Recent Meetings</h2>
+      <div className="bg-white/90 rounded-2xl border border-amber-100 shadow-sm">
+        <div className="px-6 py-5 border-b border-amber-100">
+          <h2 className="text-xl font-semibold text-slate-900">Recent Meetings</h2>
         </div>
-        <div className="divide-y divide-gray-200">
+        <div className="divide-y divide-amber-100/70">
           {recentMeetings.length === 0 ? (
-            <div className="px-6 py-8 text-center text-gray-500">
-              <Video className="w-12 h-12 mx-auto mb-3 text-gray-400" />
+            <div className="px-6 py-10 text-center text-slate-500">
+              <Video className="w-12 h-12 mx-auto mb-3 text-amber-300" />
               <p>No meetings yet. Start your first meeting!</p>
               <Link
                 to="/start-meeting"
-                className="mt-4 inline-block text-blue-600 hover:text-blue-700 font-medium"
+                className="mt-4 inline-block text-teal-600 hover:text-teal-700 font-semibold"
               >
                 Start Meeting →
               </Link>
@@ -112,24 +112,24 @@ export default function HomePage() {
               <Link
                 key={meeting._id}
                 to={`/meeting/${meeting._id}`}
-                className="block px-6 py-4 hover:bg-gray-50 transition-colors"
+                className="block px-6 py-4 transition hover:bg-amber-50/40"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex-1">
                     <div className="flex items-center space-x-2">
-                      <h3 className="text-lg font-medium text-gray-900">
+                      <h3 className="text-lg font-semibold text-slate-900">
                         {meeting.person_name}
                       </h3>
-                      <span className="text-sm text-gray-500">
+                      <span className="text-sm text-slate-500">
                         • {formatDistanceToNow(new Date(meeting.timestamp), { addSuffix: true })}
                       </span>
                     </div>
-                    <p className="mt-1 text-sm text-gray-600 line-clamp-2">
+                    <p className="mt-1 text-sm text-slate-600 line-clamp-2">
                       {meeting.summary?.split('\n')[0] || 'No summary'}
                     </p>
                   </div>
                   <div className="ml-4">
-                    <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">
+                    <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-teal-100 text-teal-800">
                       View Details
                     </span>
                   </div>
@@ -139,10 +139,10 @@ export default function HomePage() {
           )}
         </div>
         {recentMeetings.length > 0 && (
-          <div className="px-6 py-4 bg-gray-50">
+          <div className="px-6 py-4 bg-amber-50/50">
             <Link
               to="/people"
-              className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+              className="text-sm text-teal-600 hover:text-teal-700 font-semibold"
             >
               View all meetings →
             </Link>
@@ -154,22 +154,22 @@ export default function HomePage() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Link
           to="/start-meeting"
-          className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg p-6 text-white hover:from-blue-600 hover:to-blue-700 transition-all"
+          className="rounded-2xl p-6 text-white shadow-lg shadow-teal-500/20 transition-all bg-gradient-to-br from-teal-600 to-emerald-500 hover:from-teal-500 hover:to-emerald-400"
         >
           <Video className="w-10 h-10 mb-3" />
           <h3 className="text-xl font-semibold">Start New Meeting</h3>
-          <p className="mt-2 text-blue-100">
+          <p className="mt-2 text-teal-100">
             Quickly recognize a person and start recording a meeting
           </p>
         </Link>
 
         <Link
           to="/people"
-          className="bg-gradient-to-r from-purple-500 to-purple-600 rounded-lg p-6 text-white hover:from-purple-600 hover:to-purple-700 transition-all"
+          className="rounded-2xl p-6 text-white shadow-lg shadow-amber-500/20 transition-all bg-gradient-to-br from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400"
         >
           <Users className="w-10 h-10 mb-3" />
           <h3 className="text-xl font-semibold">View People</h3>
-          <p className="mt-2 text-purple-100">
+          <p className="mt-2 text-amber-100">
             Browse registered people and their meeting history
           </p>
         </Link>

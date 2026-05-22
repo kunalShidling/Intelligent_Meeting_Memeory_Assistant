@@ -59,31 +59,26 @@ function App() {
 
   if (!backendReady) {
     return (
-      <div style={{
-        minHeight: '100vh',
-        background: '#f9fafb',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexDirection: 'column',
-        gap: '16px',
-        fontFamily: 'Inter, system-ui, sans-serif'
-      }}>
-        <LoadingSpinner size="xl" text="Starting Meeting Assistant..." />
-        <p style={{ color: '#6b7280', fontSize: '0.875rem', textAlign: 'center', maxWidth: '320px' }}>
-          {statusMessage}
-        </p>
-        <p style={{ color: '#9ca3af', fontSize: '0.75rem' }}>
-          Make sure the backend server is running on port 5000.
-        </p>
+      <div className="min-h-screen flex items-center justify-center px-6">
+        <div className="w-full max-w-md rounded-2xl border border-amber-100 bg-white/85 backdrop-blur p-8 text-center shadow-xl">
+          <LoadingSpinner size="xl" text="Starting Meeting Assistant..." />
+          <p className="mt-4 text-sm text-slate-600">
+            {statusMessage}
+          </p>
+          <p className="mt-2 text-xs uppercase tracking-[0.2em] text-slate-400">
+            Ensure the backend runs on port 5000.
+          </p>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen text-slate-900 relative overflow-hidden">
+      <div className="pointer-events-none absolute -top-32 right-0 h-80 w-80 rounded-full bg-teal-200/40 blur-3xl" />
+      <div className="pointer-events-none absolute top-1/3 -left-24 h-72 w-72 rounded-full bg-amber-200/40 blur-3xl" />
       <Navbar />
-      <main className="container mx-auto px-4 py-8">
+      <main className="relative z-10 mx-auto w-full max-w-6xl px-6 py-10">
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/start-meeting" element={<StartMeetingPage />} />

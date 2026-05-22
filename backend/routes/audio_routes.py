@@ -156,7 +156,7 @@ def summarize_text():
 
         data = request.json
         text = data.get('text')
-        max_bullets = data.get('max_bullets', 10)
+        max_bullets = data.get('max_bullets', 5)
 
         if not text:
             return jsonify({'error': 'No text provided'}), 400
@@ -164,9 +164,9 @@ def summarize_text():
         logger.info(f"Summarizing text: {len(text)} characters")
 
         # Summarize
-        summary = text_summarizer.summarize_to_bullets(
+        summary = text_summarizer.summarize_meeting(
             text=text,
-            max_bullets=max_bullets,
+            max_summary_bullets=max_bullets,
             verbose=True
         )
 
@@ -261,9 +261,9 @@ def process_audio_file():
                 verbose=True
             )
 
-            summary = text_summarizer.summarize_to_bullets(
+            summary = text_summarizer.summarize_meeting(
                 text=text,
-                max_bullets=10,
+                max_summary_bullets=5,
                 verbose=True
             )
 
@@ -275,7 +275,7 @@ def process_audio_file():
                 'audio_path': audio_path
             })
 
-        job_id = job_manager.submit(audio_path, max_bullets=10)
+        job_id = job_manager.submit(audio_path, max_bullets=5)
         return jsonify({
             'success': True,
             'status': 'queued',

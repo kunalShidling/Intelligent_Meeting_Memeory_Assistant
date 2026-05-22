@@ -84,9 +84,9 @@ def start_meeting():
         )
 
         logger.info("Generating summary...")
-        summary = text_summarizer.summarize_to_bullets(
+        summary = text_summarizer.summarize_meeting(
             text=transcript,
-            max_bullets=10,
+            max_summary_bullets=5,
             verbose=True
         )
 
@@ -158,9 +158,9 @@ def create_meeting():
         # Generate summary if not provided
         if not summary:
             logger.info("Generating summary...")
-            summary = text_summarizer.summarize_to_bullets(
+            summary = text_summarizer.summarize_meeting(
                 text=transcript,
-                max_bullets=10,
+                max_summary_bullets=5,
                 verbose=True
             )
 
