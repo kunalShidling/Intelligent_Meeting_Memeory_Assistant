@@ -31,12 +31,20 @@ from flask_socketio import SocketIO
 import os
 import logging
 
-# Import route blueprints
-from routes.face_routes import face_bp
-from routes.audio_routes import audio_bp
-from routes.meeting_routes import meeting_bp
-from routes.people_routes import people_bp
-from routes.stats_routes import stats_bp
+# Import route blueprints. Support both direct execution from backend/ and
+# package-style imports from the project root.
+try:
+    from .routes.face_routes import face_bp
+    from .routes.audio_routes import audio_bp
+    from .routes.meeting_routes import meeting_bp
+    from .routes.people_routes import people_bp
+    from .routes.stats_routes import stats_bp
+except ImportError:
+    from routes.face_routes import face_bp
+    from routes.audio_routes import audio_bp
+    from routes.meeting_routes import meeting_bp
+    from routes.people_routes import people_bp
+    from routes.stats_routes import stats_bp
 
 # Configure logging
 logging.basicConfig(
@@ -102,11 +110,18 @@ if __name__ == '__main__':
     logger.info("Starting Meeting Assistant API Server...")
     logger.info("API Documentation: http://localhost:5000/api/health")
 
+    # Keep the default launch stable for local development scripts.
+    # Debug mode and the auto-reloader can spawn extra processes and watch the
+    # virtual environment, which causes noisy restarts and memory pressure.
+    debug_mode = os.environ.get('MEETING_ASSISTANT_DEBUG', '0') == '1'
+    use_reloader = os.environ.get('MEETING_ASSISTANT_USE_RELOADER', '0') == '1'
+
     # Run with SocketIO support
     socketio.run(
         app,
         host='0.0.0.0',
         port=5000,
-        debug=True,
+        debug=debug_mode,
+        use_reloader=use_reloader,
         allow_unsafe_werkzeug=True
     )

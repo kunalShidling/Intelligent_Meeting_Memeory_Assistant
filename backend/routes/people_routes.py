@@ -21,21 +21,27 @@ people_bp = Blueprint('people', __name__, url_prefix='/api/people')
 # Global instance
 database = None
 
-def init_database():
+def init_database() -> bool:
     """Initialize database connection."""
     global database
 
     if database is None:
         logger.info("Initializing database...")
-        database = FaceDatabase()
-        database.connect()
+        candidate = FaceDatabase()
+        if not candidate.connect():
+            logger.error("Database initialization failed")
+            return False
+        database = candidate
         logger.info("Database initialized successfully")
+
+    return True
 
 @people_bp.route('/', methods=['GET'])
 def get_all_people():
     """Get all registered people."""
     try:
-        init_database()
+        if not init_database():
+            return jsonify({'error': 'Database unavailable'}), 503
 
         people = database.get_all_embeddings()
 
@@ -81,7 +87,8 @@ def get_all_people():
 def get_person(person_id):
     """Get person details by ID."""
     try:
-        init_database()
+        if not init_database():
+            return jsonify({'error': 'Database unavailable'}), 503
 
         from bson import ObjectId
 
@@ -132,7 +139,8 @@ def get_person(person_id):
 def get_person_meetings_route(person_id):
     """Get all meetings for a person."""
     try:
-        init_database()
+        if not init_database():
+            return jsonify({'error': 'Database unavailable'}), 503
 
         meetings = database.get_all_meetings(person_id)
 
@@ -156,7 +164,8 @@ def get_person_meetings_route(person_id):
 def update_person(person_id):
     """Update person information."""
     try:
-        init_database()
+        if not init_database():
+            return jsonify({'error': 'Database unavailable'}), 503
 
         from bson import ObjectId
         from datetime import datetime
@@ -191,7 +200,8 @@ def update_person(person_id):
 def delete_person(person_id):
     """Delete a person and all their meetings."""
     try:
-        init_database()
+        if not init_database():
+            return jsonify({'error': 'Database unavailable'}), 503
 
         from bson import ObjectId
 
@@ -217,7 +227,8 @@ def delete_person(person_id):
 def search_people():
     """Search people by name."""
     try:
-        init_database()
+        if not init_database():
+            return jsonify({'error': 'Database unavailable'}), 503
 
         query = request.args.get('q', '')
 

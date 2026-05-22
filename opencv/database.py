@@ -167,18 +167,25 @@ class FaceDatabase:
         try:
             # Get all embeddings from database
             all_records = self.get_all_embeddings()
-            
+
             if not all_records:
                 return False, None
-            
-            # Compare with all stored embeddings
-            from embedder import FaceEmbedder
-            embedder = FaceEmbedder()
-            
+
+            # Compare with all stored embeddings using cosine similarity.
+            # This avoids initializing FaceNet again, which can exhaust memory.
+            norm_query = np.linalg.norm(embedding)
+            if norm_query == 0:
+                logger.warning("Zero-norm embedding supplied; skipping duplicate check")
+                return False, None
+
             for record in all_records:
                 stored_embedding = record['embedding']
-                similarity = embedder.compare_embeddings(embedding, stored_embedding)
-                
+                norm_stored = np.linalg.norm(stored_embedding)
+                if norm_stored == 0:
+                    continue
+
+                similarity = float(np.dot(embedding, stored_embedding) / (norm_query * norm_stored))
+
                 if similarity >= config.DUPLICATE_THRESHOLD:
                     logger.warning(
                         f"Duplicate embedding detected - "

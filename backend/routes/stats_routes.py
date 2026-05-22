@@ -22,21 +22,27 @@ stats_bp = Blueprint('stats', __name__, url_prefix='/api/stats')
 # Global instance
 database = None
 
-def init_database():
+def init_database() -> bool:
     """Initialize database connection."""
     global database
 
     if database is None:
         logger.info("Initializing database...")
-        database = FaceDatabase()
-        database.connect()
+        candidate = FaceDatabase()
+        if not candidate.connect():
+            logger.error("Database initialization failed")
+            return False
+        database = candidate
         logger.info("Database initialized successfully")
+
+    return True
 
 @stats_bp.route('/dashboard', methods=['GET'])
 def get_dashboard_stats():
     """Get statistics for dashboard."""
     try:
-        init_database()
+        if not init_database():
+            return jsonify({'error': 'Database unavailable'}), 503
 
         # Total people
         total_people = database.count_embeddings()
@@ -90,7 +96,8 @@ def get_dashboard_stats():
 def get_people_stats():
     """Get people-related statistics."""
     try:
-        init_database()
+        if not init_database():
+            return jsonify({'error': 'Database unavailable'}), 503
 
         people = database.get_all_embeddings()
 
@@ -129,7 +136,8 @@ def get_people_stats():
 def get_meetings_timeline():
     """Get meeting timeline for charts."""
     try:
-        init_database()
+        if not init_database():
+            return jsonify({'error': 'Database unavailable'}), 503
 
         # Get meetings from last 30 days
         thirty_days_ago = datetime.now() - timedelta(days=30)

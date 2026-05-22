@@ -45,6 +45,7 @@ export default function StartMeetingPage() {
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [lastSavedMeeting, setLastSavedMeeting] = useState(null);
   const [videoSize, setVideoSize] = useState({ width: 1280, height: 720 });
+  const [expandedMeetingId, setExpandedMeetingId] = useState(null);
 
   // Refs for tracking background loops without triggering unneeded re-renders
   const loopRef = useRef(null);
@@ -239,6 +240,34 @@ export default function StartMeetingPage() {
     if (Array.isArray(response.data)) return response.data;
     if (Array.isArray(response.results)) return response.results;
     return [];
+  };
+
+  const getUniqueNames = (names) => {
+    if (!Array.isArray(names)) return [];
+    const seen = new Set();
+    const unique = [];
+    names.forEach((name) => {
+      const cleaned = String(name || '').trim();
+      if (!cleaned) return;
+      const key = cleaned.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      unique.push(cleaned);
+    });
+    return unique;
+  };
+
+  const splitIntoPoints = (text) => {
+    if (!text) return [];
+    const rawLines = String(text).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (rawLines.length > 1) return rawLines;
+
+    const normalized = String(text).replace(/\s+/g, ' ').trim();
+    if (!normalized) return [];
+
+    const matches = normalized.match(/[^.!?]+[.!?]*/g) || [];
+    const sentences = matches.map(segment => segment.trim()).filter(Boolean);
+    return sentences.length ? sentences : [normalized];
   };
 
   const computeMeetingScore = (meeting, participantIds, participantNames) => {
@@ -659,6 +688,10 @@ export default function StartMeetingPage() {
     }
   };
 
+  const toggleMeetingDetails = (meetingId) => {
+    setExpandedMeetingId((prev) => (prev === meetingId ? null : meetingId));
+  };
+
   const waitForAudioJob = async (jobId) => {
     const timeoutMs = 120000;
     const intervalMs = 1500;
@@ -1017,34 +1050,82 @@ export default function StartMeetingPage() {
               </div>
             ) : (
               <div className="space-y-3 max-h-[420px] overflow-y-auto pr-2">
-                {displayedMeetings.map(meeting => (
-                  <div key={meeting._id} className="border border-amber-100 rounded-xl p-4 hover:border-amber-200 transition">
-                    <div className="flex items-center justify-between gap-3 mb-2">
-                      <p className="text-sm font-semibold text-slate-800">
-                        {meeting.participant_names?.length
-                          ? meeting.participant_names.join(' + ')
-                          : meeting.person_name || 'Meeting'}
-                      </p>
-                      <span className="text-xs text-slate-500">
-                        {meeting.timestamp
-                          ? formatDistanceToNow(new Date(meeting.timestamp), { addSuffix: true })
-                          : 'just now'}
-                      </span>
-                    </div>
-                    <p className="text-sm text-slate-600 line-clamp-3">
-                      {meeting.summary || 'No summary available'}
-                    </p>
-                    {meeting.participant_names?.length > 1 && (
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {meeting.participant_names.map(name => (
-                          <span key={`${meeting._id}-${name}`} className="text-[10px] uppercase tracking-wide text-slate-500">
-                            {name}
+                {displayedMeetings.map((meeting) => {
+                  const participantNames = getUniqueNames(meeting.participant_names);
+                  const isExpanded = expandedMeetingId === meeting._id;
+                  return (
+                    <div
+                      key={meeting._id}
+                      className={`border rounded-xl p-4 transition ${isExpanded
+                        ? 'border-teal-300 bg-teal-50/40'
+                        : 'border-amber-100 hover:border-amber-200'}`}
+                    >
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <p className="text-sm font-semibold text-slate-800">
+                          {participantNames.length
+                            ? participantNames.join(' + ')
+                            : meeting.person_name || 'Meeting'}
+                        </p>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs text-slate-500">
+                            {meeting.timestamp
+                              ? formatDistanceToNow(new Date(meeting.timestamp), { addSuffix: true })
+                              : 'just now'}
                           </span>
-                        ))}
+                          <button
+                            type="button"
+                            onClick={() => toggleMeetingDetails(meeting._id)}
+                            className="text-xs font-semibold text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-3 py-1 hover:bg-teal-100"
+                          >
+                            {isExpanded ? 'Hide details' : 'View details'}
+                          </button>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                ))}
+                      <p className="text-sm text-slate-600 line-clamp-3">
+                        {meeting.summary || 'No summary available'}
+                      </p>
+                      {isExpanded && (
+                        <div className="mt-3 border-t border-teal-200/70 pt-3 space-y-3">
+                          <div className="text-xs uppercase tracking-wide text-teal-700 font-semibold">Meeting details</div>
+                          <div className="space-y-2">
+                            <p className="text-xs text-slate-500">Participants</p>
+                            <div className="flex flex-wrap gap-2">
+                              {(participantNames.length ? participantNames : [meeting.person_name || 'Unknown']).map((name, index) => (
+                                <span
+                                  key={`${meeting._id}-detail-name-${index}`}
+                                  className="px-2 py-1 text-[11px] font-medium rounded-full bg-white border border-amber-100 text-slate-600"
+                                >
+                                  {name}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <p className="text-xs text-slate-500">Transcript</p>
+                            {splitIntoPoints(meeting.transcript).length ? (
+                              <ol className="list-decimal list-inside space-y-2 text-sm text-slate-600">
+                                {splitIntoPoints(meeting.transcript).map((point, index) => (
+                                  <li key={`${meeting._id}-transcript-${index}`}>{point}</li>
+                                ))}
+                              </ol>
+                            ) : (
+                              <p className="text-sm text-slate-600">No transcript available.</p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      {participantNames.length > 1 && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {participantNames.map((name, index) => (
+                            <span key={`${meeting._id}-${name}-${index}`} className="text-[10px] uppercase tracking-wide text-slate-500">
+                              {name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

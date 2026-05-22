@@ -47,14 +47,17 @@ UNKNOWN_PROMPT_COOLDOWN_SEC = 8  # Delay between unknown registration prompts
 # MongoDB connection - Choose one:
 
 # Option 1: Local MongoDB
-MONGODB_URI ="mongodb+srv://kunalshidling_db_user:7oVEGpDYgJF63mQW@cluster0.57skn49.mongodb.net/?appName=Cluster0"
+MONGODB_URI = os.getenv(
+	"MONGODB_URI",
+	"mongodb+srv://kunalshidling_db_user:7oVEGpDYgJF63mQW@cluster0.57skn49.mongodb.net/?appName=Cluster0"
+)
 
 # Option 2: MongoDB Atlas (Cloud) - Replace with your connection string
 # MONGODB_URI = "mongodb+srv://<username>:<password>@<cluster>.mongodb.net/?retryWrites=true&w=majority"
 # Example: MONGODB_URI = "mongodb+srv://myuser:mypass123@cluster0.abc123.mongodb.net/?retryWrites=true&w=majority"
 
-MONGODB_DATABASE = "meeting_assistant"
-MONGODB_COLLECTION = "face_embeddings"
+MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "meeting_assistant")
+MONGODB_COLLECTION = os.getenv("MONGODB_COLLECTION", "face_embeddings")
 
 # MongoDB SSL/TLS settings (for Atlas)
 MONGODB_TLS = True
