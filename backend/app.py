@@ -25,6 +25,10 @@ sys.path.insert(0, parent_dir)
 sys.path.insert(0, os.path.join(parent_dir, 'opencv'))
 sys.path.insert(0, os.path.join(parent_dir, 'audio_to_text'))
 
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(parent_dir, '.env'), override=True)
+
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO

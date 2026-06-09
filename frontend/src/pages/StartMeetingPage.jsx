@@ -1088,6 +1088,12 @@ export default function StartMeetingPage() {
                         <div className="mt-3 border-t border-teal-200/70 pt-3 space-y-3">
                           <div className="text-xs uppercase tracking-wide text-teal-700 font-semibold">Meeting details</div>
                           <div className="space-y-2">
+                            <p className="text-xs text-slate-500">Summary</p>
+                            <p className="text-sm text-slate-600 whitespace-pre-line leading-relaxed">
+                              {meeting.summary || 'No summary available.'}
+                            </p>
+                          </div>
+                          <div className="space-y-2">
                             <p className="text-xs text-slate-500">Participants</p>
                             <div className="flex flex-wrap gap-2">
                               {(participantNames.length ? participantNames : [meeting.person_name || 'Unknown']).map((name, index) => (
@@ -1099,18 +1105,6 @@ export default function StartMeetingPage() {
                                 </span>
                               ))}
                             </div>
-                          </div>
-                          <div className="space-y-2">
-                            <p className="text-xs text-slate-500">Transcript</p>
-                            {splitIntoPoints(meeting.transcript).length ? (
-                              <ol className="list-decimal list-inside space-y-2 text-sm text-slate-600">
-                                {splitIntoPoints(meeting.transcript).map((point, index) => (
-                                  <li key={`${meeting._id}-transcript-${index}`}>{point}</li>
-                                ))}
-                              </ol>
-                            ) : (
-                              <p className="text-sm text-slate-600">No transcript available.</p>
-                            )}
                           </div>
                         </div>
                       )}
@@ -1173,29 +1167,11 @@ export default function StartMeetingPage() {
                     <Loader2 className="w-4 h-4 animate-spin" />
                     Generating summary...
                   </div>
-                ) : summarySections.summary.length > 0 ? (
-                  <ol className="list-decimal list-inside space-y-2">
-                    {summarySections.summary.map((point, index) => (
-                      <li key={`summary-point-${index}`}>{point}</li>
-                    ))}
-                  </ol>
                 ) : (
-                  <p>Summary will appear after processing.</p>
+                  <p className="whitespace-pre-line leading-relaxed text-slate-700">
+                    {reviewData.summary || 'Summary will appear after processing.'}
+                  </p>
                 )}
-                <div className="border-t border-teal-200/70 pt-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-teal-700">Action Items</p>
-                  {isProcessing ? (
-                    <p className="mt-2 text-teal-800/80">Waiting for action items...</p>
-                  ) : summarySections.actions.length > 0 ? (
-                    <ul className="mt-2 space-y-2">
-                      {summarySections.actions.map((item, index) => (
-                        <li key={`action-item-${index}`}>• {item}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-2 text-teal-800/80">No action items captured.</p>
-                  )}
-                </div>
               </div>
               {pendingMeeting && (
                 <button

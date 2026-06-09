@@ -3,6 +3,9 @@ Database module for storing and retrieving face embeddings.
 Uses MongoDB for persistent storage.
 """
 
+import os
+from urllib.parse import urlparse
+
 import numpy as np
 from pymongo import MongoClient, ASCENDING
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
@@ -30,6 +33,38 @@ class FaceDatabase:
         self.db = None
         self.collection = None
         self._connected = False
+
+    def _is_local_uri(self, uri: str) -> bool:
+        """Return True when the URI points at a local MongoDB instance."""
+        parsed = urlparse(uri)
+        host = (parsed.hostname or "").lower()
+        return host in {"localhost", "127.0.0.1", "::1"}
+
+    def _client_options_for_uri(self, uri: str) -> Dict:
+        """Build MongoClient options for the given URI."""
+        options = {
+            'serverSelectionTimeoutMS': 10000,
+        }
+
+        # Let PyMongo handle Atlas TLS defaults. Explicit CA overrides and
+        # invalid-certificate bypasses can cause handshake failures on Windows.
+        if uri.startswith('mongodb+srv://'):
+            options['tls'] = True
+
+        return options
+
+    def _candidate_uris(self) -> List[str]:
+        """Return URIs to try in order."""
+        candidates = [self.uri]
+
+        # Only allow an explicit fallback when the caller opts in. The
+        # Atlas URI from .env should remain the primary source of truth.
+        if os.getenv('MONGODB_ALLOW_LOCAL_FALLBACK', '0') == '1':
+            local_fallback = os.getenv('MONGODB_FALLBACK_URI', 'mongodb://localhost:27017/')
+            if local_fallback and local_fallback != self.uri:
+                candidates.append(local_fallback)
+
+        return candidates
     
     def connect(self) -> bool:
         """
@@ -38,44 +73,59 @@ class FaceDatabase:
         Returns:
             bool: True if connection successful, False otherwise
         """
-        try:
-            # Import SSL for certificate handling
-            import ssl
-            import certifi
-            
-            # Create client with SSL/TLS parameters for MongoDB Atlas
-            self.client = MongoClient(
-                self.uri,
-                serverSelectionTimeoutMS=10000,
-                tls=True,
-                tlsAllowInvalidCertificates=True,  # Bypass SSL verification
-                tlsCAFile=certifi.where()  # Use certifi certificates
-            )
-            
-            # Test connection
-            self.client.admin.command('ping')
-            
-            # Get database and collection
-            self.db = self.client[config.MONGODB_DATABASE]
-            self.collection = self.db[config.MONGODB_COLLECTION]
-            self.meetings_collection = None  # Will be initialized in _create_indexes
-            
-            # Create indexes
-            self._create_indexes()
-            
-            self._connected = True
-            logger.info(f"Connected to MongoDB: {config.MONGODB_DATABASE}.{config.MONGODB_COLLECTION}")
-            
-            return True
-            
-        except ConnectionFailure as e:
-            logger.error(f"Failed to connect to MongoDB: {e}")
-            self._connected = False
-            return False
-        except Exception as e:
-            logger.error(f"Error connecting to database: {e}")
-            self._connected = False
-            return False
+        last_error = None
+
+        for uri in self._candidate_uris():
+            try:
+                if uri != self.uri:
+                    logger.warning(f"Trying MongoDB fallback URI: {uri}")
+
+                self.client = MongoClient(uri, **self._client_options_for_uri(uri))
+
+                # Test connection.
+                self.client.admin.command('ping')
+
+                # Get database and collection.
+                self.db = self.client[config.MONGODB_DATABASE]
+                self.collection = self.db[config.MONGODB_COLLECTION]
+                self.meetings_collection = None  # Will be initialized in _create_indexes
+
+                # Create indexes.
+                self._create_indexes()
+
+                self._connected = True
+                logger.info(
+                    f"Connected to MongoDB: {config.MONGODB_DATABASE}.{config.MONGODB_COLLECTION}"
+                )
+
+                return True
+
+            except ConnectionFailure as e:
+                last_error = e
+                logger.warning(f"Failed to connect to MongoDB at {uri}: {e}")
+
+                if self.client:
+                    self.client.close()
+                    self.client = None
+
+                self.db = None
+                self.collection = None
+                self.meetings_collection = None
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Error connecting to MongoDB at {uri}: {e}")
+
+                if self.client:
+                    self.client.close()
+                    self.client = None
+
+                self.db = None
+                self.collection = None
+                self.meetings_collection = None
+
+        logger.error(f"Failed to connect to MongoDB: {last_error}")
+        self._connected = False
+        return False
     
     def _create_indexes(self):
         """Create database indexes for efficient querying."""

@@ -179,34 +179,26 @@ Provide ONLY the bullet points, no additional commentary."""
         if verbose:
             print(f"Summarizing meeting text ({len(text)} characters)...")
 
-        prompt = f"""Summarize the following meeting transcript.
+        prompt = f"""Write a short meeting note from the transcript below.
 
-Output format (exactly):
-{self.SUMMARY_SECTION_TITLE}:
-• bullet 1
-• bullet 2
+    Requirements:
+    - Make it much shorter than the transcript
+    - Use at most 2 short paragraphs
+    - Focus only on the main discussion, key decisions, and next steps
+    - Keep the language clear, specific, and professional
+    - Do not use bullet points, numbered lists, or headings
+    - Do not repeat the transcript verbatim
+    - Keep it concise enough that someone would read the summary instead of the transcript
 
-{self.ACTION_SECTION_TITLE}:
-• Name → task (if owner known)
-
-Rules:
-- Keep it short and scannable
-- Use up to {max_summary_bullets} bullets in {self.SUMMARY_SECTION_TITLE}
-- Use up to {max_action_items} bullets in {self.ACTION_SECTION_TITLE}
-- Ignore small talk and filler
-- Avoid repetition
-- Each bullet <= {self.MAX_BULLET_CHARS} characters
-- If there are no action items, write "• None" under {self.ACTION_SECTION_TITLE}
-
-Transcript:
-"""
+    Transcript:
+    """
 
         try:
             chat_completion = self.client.chat.completions.create(
                 messages=[
                     {
                         "role": "system",
-                        "content": "You create short, professional meeting summaries with clear action items."
+                        "content": "You write concise, human-style meeting notes in natural prose."
                     },
                     {
                         "role": "user",
@@ -221,26 +213,36 @@ Transcript:
             )
 
             raw_summary = chat_completion.choices[0].message.content.strip()
-            summary_bullets, action_bullets = self._split_sections(raw_summary)
-
-            if not summary_bullets:
-                summary_bullets = self._fallback_bullets(raw_summary, max_summary_bullets)
-
-            summary_bullets = self._compress_bullets(
-                summary_bullets,
-                max_summary_bullets,
-                self.MAX_BULLET_CHARS
-            )
-            action_bullets = self._compress_bullets(
-                action_bullets,
-                max_action_items,
-                self.MAX_BULLET_CHARS
-            )
-
-            return self._format_sections(summary_bullets, action_bullets)
+            return self._ensure_shorter_than_source(raw_summary, text)
 
         except Exception as e:
             raise Exception(f"Failed to generate meeting summary: {str(e)}")
+
+    def _ensure_shorter_than_source(self, summary: str, source: str) -> str:
+        source_length = len(source.strip())
+        summary = summary.strip()
+
+        if not summary or source_length <= 1:
+            return summary
+
+        if len(summary) < source_length:
+            return summary
+
+        sentences = re.split(r"(?<=[.!?])\s+", summary)
+        if len(sentences) > 1:
+            trimmed = []
+            for sentence in sentences:
+                candidate = " ".join(trimmed + [sentence]).strip()
+                if len(candidate) >= source_length:
+                    break
+                trimmed.append(sentence)
+            if trimmed:
+                summary = " ".join(trimmed).strip()
+
+        if len(summary) >= source_length:
+            summary = summary[: max(1, source_length - 1)].rsplit(" ", 1)[0].strip()
+
+        return summary
 
     def _extract_bullets(self, text: str) -> List[str]:
         bullets = []

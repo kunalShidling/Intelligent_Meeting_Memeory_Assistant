@@ -13,6 +13,19 @@ export default function PersonProfilePage() {
   const [error, setError] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
+  const splitSummaryIntoPoints = (summary) => {
+    if (!summary) return [];
+
+    const points = String(summary)
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => line.replace(/^[•\-*\d.\s]+/, '').trim())
+      .filter(Boolean);
+
+    return points.length ? points : [String(summary).trim()];
+  };
+
   useEffect(() => {
     loadPerson();
   }, [id]);
@@ -157,7 +170,7 @@ export default function PersonProfilePage() {
                       </span>
                     </div>
                     <div className="mt-3 text-[15px] text-slate-600 line-clamp-3 whitespace-pre-line leading-relaxed group-hover:text-slate-900 transition-colors">
-                      {meeting.summary}
+                      {meeting.summary || 'No summary available'}
                     </div>
                   </div>
                   <div className="ml-4 flex-shrink-0 pt-2">

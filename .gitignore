@@ -59,3 +59,5 @@ models/
 *.sqlite
 .config.py
 node_modules/
+
+meeting_data/

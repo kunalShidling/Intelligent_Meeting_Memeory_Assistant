@@ -3,6 +3,11 @@ Configuration settings for the facial recognition system.
 """
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
 
 # ==================== Camera Settings ====================
 CAMERA_INDEX = 0  # Default webcam index
